@@ -216,52 +216,126 @@ internal class InferenceEngineImpl private constructor(
      */
     override fun sendUserPrompt(
         message: String,
-        predictLength: Int,
+        predictLength: Int
     ): Flow<String> = flow {
-        require(message.isNotEmpty()) { "User prompt discarded due to being empty!" }
-        check(_state.value is InferenceEngine.State.ModelReady) {
-            "User prompt discarded due to: ${_state.value.javaClass.simpleName}"
+
+        require(message.isNotEmpty()) {
+            "User prompt cannot be empty"
+        }
+
+        check(
+            _state.value is InferenceEngine.State.ModelReady
+        ) {
+            "Model is not ready"
         }
 
         try {
-            Log.i(TAG, "Sending user prompt...")
-            _readyForSystemPrompt = false
-            _state.value = InferenceEngine.State.ProcessingUserPrompt
 
-            processUserPrompt(message, predictLength).let { result ->
+            Log.i(
+                TAG,
+                "Sending user prompt..."
+            )
+
+            // Reset cancellation for this generation
+            _cancelGeneration = false
+
+            _readyForSystemPrompt = false
+
+            _state.value =
+                InferenceEngine.State.ProcessingUserPrompt
+
+            processUserPrompt(
+                message,
+                predictLength
+            ).let { result ->
+
                 if (result != 0) {
-                    Log.e(TAG, "Failed to process user prompt: $result")
+
+                    Log.e(
+                        TAG,
+                        "Failed to process user prompt: $result"
+                    )
+
                     return@flow
                 }
             }
 
-            Log.i(TAG, "User prompt processed. Generating assistant prompt...")
-            _state.value = InferenceEngine.State.Generating
+            Log.i(
+                TAG,
+                "User prompt processed. Generating assistant prompt..."
+            )
+
+            _state.value =
+                InferenceEngine.State.Generating
+
             while (!_cancelGeneration) {
+
                 generateNextToken()?.let { utf8token ->
-                    if (utf8token.isNotEmpty()) emit(utf8token)
+
+                    if (utf8token.isNotEmpty()) {
+
+                        emit(utf8token)
+                    }
+
                 } ?: break
             }
+
             if (_cancelGeneration) {
-                Log.i(TAG, "Assistant generation aborted per requested.")
+
+                Log.i(
+                    TAG,
+                    "Assistant generation aborted per requested."
+                )
+
             } else {
-                Log.i(TAG, "Assistant generation complete. Awaiting user prompt...")
+
+                Log.i(
+                    TAG,
+                    "Assistant generation complete. Awaiting user prompt..."
+                )
             }
-            _state.value = InferenceEngine.State.ModelReady
+
+            _state.value =
+                InferenceEngine.State.ModelReady
+
         } catch (e: CancellationException) {
-            Log.i(TAG, "Assistant generation's flow collection cancelled.")
-            _state.value = InferenceEngine.State.ModelReady
+
+            Log.i(
+                TAG,
+                "Assistant generation's flow collection cancelled."
+            )
+
+            _state.value =
+                InferenceEngine.State.ModelReady
+
             throw e
+
         } catch (e: Exception) {
-            Log.e(TAG, "Error during generation!", e)
-            _state.value = InferenceEngine.State.Error(e)
+
+            Log.e(
+                TAG,
+                "Error during generation!",
+                e
+            )
+
+            _state.value =
+                InferenceEngine.State.Error(e)
+
             throw e
         }
+
     }.flowOn(llamaDispatcher)
 
     /**
      * Benchmark the model
      */
+    override fun stopGeneration() {
+        if (_state.value is InferenceEngine.State.Generating || _state.value is InferenceEngine.State.ProcessingUserPrompt) {
+            Log.i(TAG, "Stopping generation...")
+            _cancelGeneration = true
+        }
+    }
+
     override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String =
         withContext(llamaDispatcher) {
             check(_state.value is InferenceEngine.State.ModelReady) {

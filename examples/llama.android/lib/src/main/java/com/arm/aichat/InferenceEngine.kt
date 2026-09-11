@@ -8,8 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
  * Interface defining the core LLM inference operations.
  */
 interface InferenceEngine {
+
     /**
-     * Current state of the inference engine
+     * Current state of the inference engine.
      */
     val state: StateFlow<State>
 
@@ -21,19 +22,36 @@ interface InferenceEngine {
     suspend fun loadModel(pathToModel: String)
 
     /**
-     * Sends a system prompt to the loaded model
+     * Sends a system prompt to the loaded model.
      */
     suspend fun setSystemPrompt(systemPrompt: String)
 
     /**
-     * Sends a user prompt to the loaded model and returns a Flow of generated tokens.
+     * Sends a user prompt to the loaded model and returns
+     * a Flow of generated tokens.
      */
-    fun sendUserPrompt(message: String, predictLength: Int = DEFAULT_PREDICT_LENGTH): Flow<String>
+    fun sendUserPrompt(
+        message: String,
+        predictLength: Int = DEFAULT_PREDICT_LENGTH
+    ): Flow<String>
+
+    /**
+     * Stops the current generation.
+     *
+     * This does not destroy the model.
+     * The model can be used again after stopping.
+     */
+    fun stopGeneration()
 
     /**
      * Runs a benchmark with the specified parameters.
      */
-    suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int = 1): String
+    suspend fun bench(
+        pp: Int,
+        tg: Int,
+        pl: Int,
+        nr: Int = 1
+    ): String
 
     /**
      * Unloads the currently loaded model.
@@ -46,24 +64,33 @@ interface InferenceEngine {
     fun destroy()
 
     /**
-     * States of the inference engine
+     * States of the inference engine.
      */
     sealed class State {
+
         object Uninitialized : State()
+
         object Initializing : State()
+
         object Initialized : State()
 
         object LoadingModel : State()
+
         object UnloadingModel : State()
+
         object ModelReady : State()
 
         object Benchmarking : State()
+
         object ProcessingSystemPrompt : State()
+
         object ProcessingUserPrompt : State()
 
         object Generating : State()
 
-        data class Error(val exception: Exception) : State()
+        data class Error(
+            val exception: Exception
+        ) : State()
     }
 
     companion object {
@@ -71,19 +98,27 @@ interface InferenceEngine {
     }
 }
 
+/**
+ * States where the engine cannot safely be interrupted.
+ */
 val State.isUninterruptible
-    get() = this is State.Initializing ||
-        this is State.LoadingModel ||
-        this is State.UnloadingModel ||
-        this is State.Benchmarking ||
-        this is State.ProcessingSystemPrompt ||
-        this is State.ProcessingUserPrompt
+    get() =
+        this is State.Initializing ||
+            this is State.LoadingModel ||
+            this is State.UnloadingModel ||
+            this is State.Benchmarking ||
+            this is State.ProcessingSystemPrompt ||
+            this is State.ProcessingUserPrompt
 
+/**
+ * Returns true if a model is currently loaded.
+ */
 val State.isModelLoaded: Boolean
-    get() = this is State.ModelReady ||
-        this is State.Benchmarking ||
-        this is State.ProcessingSystemPrompt ||
-        this is State.ProcessingUserPrompt ||
-        this is State.Generating
+    get() =
+        this is State.ModelReady ||
+            this is State.Benchmarking ||
+            this is State.ProcessingSystemPrompt ||
+            this is State.ProcessingUserPrompt ||
+            this is State.Generating
 
 class UnsupportedArchitectureException : Exception()

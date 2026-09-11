@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -45,12 +46,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
-
+val room_version = "3.0.2"
 dependencies {
     implementation(libs.bundles.androidx)
     implementation(libs.material)
 
     implementation(project(":lib"))
+
+    implementation("androidx.core:core:1.17.0")
+
+    val room_version = "3.0.2"
+
+    implementation("androidx.room3:room3-runtime:$room_version")
+    ksp("androidx.room3:room3-compiler:$room_version")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

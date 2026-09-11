@@ -1,77 +1,360 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/main"
+    android:id="@+id/drawerLayout"
+    android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:layout_width="match_parent">
+    android:fitsSystemWindows="true"
+    tools:context=".MainActivity">
 
-    <LinearLayout
-        android:fitsSystemWindows="true"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:layout_marginEnd="4dp"
-        tools:context=".MainActivity">
+<androidx.constraintlayout.widget.ConstraintLayout
+    android:id="@+id/rootLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/white"
+    android:fitsSystemWindows="true">
 
-        <ScrollView
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:fadeScrollbars="false">
+    <!-- ========================================================= -->
+    <!-- TOP BAR -->
+    <!-- ========================================================= -->
 
-            <TextView
-                android:id="@+id/gguf"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:padding="16dp"
-                android:text="Selected GGUF model's metadata will show here."
-                style="@style/TextAppearance.MaterialComponents.Body2" />
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/topBar"
+        android:layout_width="0dp"
+        android:layout_height="60dp"
+        android:background="@android:color/white"
+        android:elevation="2dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
-        </ScrollView>
 
-        <com.google.android.material.divider.MaterialDivider
-            android:layout_width="match_parent"
-            android:layout_height="2dp"
-            android:layout_marginHorizontal="16dp" />
+        <!-- Menu -->
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/messages"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="4"
-            android:fadeScrollbars="false"
-            android:scrollbars="vertical"
-            app:reverseLayout="true"
-            tools:listitem="@layout/item_message_assistant"/>
+        <ImageButton
+            android:id="@+id/menuButton"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Menu"
+            android:padding="10dp"
+            android:src="@drawable/ic_menu"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
+
+        <!-- App title -->
+
+        <TextView
+            android:id="@+id/titleText"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:text="Local AI"
+            android:textColor="#111111"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toEndOf="@id/menuButton" />
+
+
+        <!-- Loaded model name -->
+
+        <TextView
+            android:id="@+id/modelNameText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="8dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="No model"
+            android:textColor="#777777"
+            android:textSize="12sp"
+            app:layout_constraintStart_toEndOf="@id/titleText"
+            app:layout_constraintEnd_toStartOf="@id/moreButton"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+
+        <!-- More -->
+
+        <ImageButton
+            android:id="@+id/moreButton"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginEnd="8dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="More options"
+            android:padding="10dp"
+            android:src="@drawable/ic_more"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+
+    <!-- ========================================================= -->
+    <!-- EMPTY STATE -->
+    <!-- ========================================================= -->
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/emptyState"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        app:layout_constraintTop_toBottomOf="@id/topBar"
+        app:layout_constraintBottom_toTopOf="@id/composerContainer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+
+        <!-- AI Icon -->
+
+        <ImageView
+            android:id="@+id/aiIcon"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@drawable/bg_ai_icon"
+            android:padding="16dp"
+            android:contentDescription="AI"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toTopOf="@id/welcomeText"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintVertical_chainStyle="packed" />
+
+
+        <!-- Welcome -->
+
+        <TextView
+            android:id="@+id/welcomeText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Welcome to Local AI"
+            android:textColor="#111111"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            app:layout_constraintTop_toBottomOf="@id/aiIcon"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+
+        <!-- Subtitle -->
+
+        <TextView
+            android:id="@+id/subtitleText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="Run AI completely on your device"
+            android:textColor="#777777"
+            android:textSize="14sp"
+            app:layout_constraintTop_toBottomOf="@id/welcomeText"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+
+        <!-- Model status -->
+
+        <TextView
+            android:id="@+id/modelStatusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="No model loaded"
+            android:textColor="#888888"
+            android:textSize="14sp"
+            app:layout_constraintTop_toBottomOf="@id/subtitleText"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+
+        <!-- ===================================================== -->
+        <!-- LOAD MODEL BUTTON -->
+        <!-- ===================================================== -->
+
+        <Button
+            android:id="@+id/loadModelButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_send_button"
+            android:minWidth="150dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:text="Load Model"
+            android:textAllCaps="false"
+            android:textColor="@android:color/white"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            app:layout_constraintTop_toBottomOf="@id/modelStatusText"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+
+        <!-- Suggestion 1 -->
+
+        <TextView
+            android:id="@+id/suggestionJava"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:background="@drawable/bg_suggestion"
+            android:clickable="true"
+            android:focusable="true"
             android:paddingStart="16dp"
-            android:paddingEnd="4dp">
+            android:paddingTop="10dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="10dp"
+            android:text="Explain Java concepts"
+            android:textColor="#444444"
+            android:textSize="13sp"
+            android:visibility="gone"
+            app:layout_constraintTop_toBottomOf="@id/loadModelButton"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
 
-            <EditText
-                android:id="@+id/user_input"
-                android:enabled="false"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="match_parent"
-                android:padding="8dp"
-                style="@style/TextAppearance.MaterialComponents.Body2"
-                android:hint="Please first pick a GGUF model file to import." />
 
-            <com.google.android.material.floatingactionbutton.FloatingActionButton
-                android:id="@+id/fab"
-                android:enabled="true"
-                style="@style/Widget.Material3.FloatingActionButton.Primary"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_margin="12dp"
-                android:src="@drawable/outline_folder_open_24" />
+        <!-- Suggestion 2 -->
 
-        </LinearLayout>
+        <TextView
+            android:id="@+id/suggestionSpring"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_suggestion"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingStart="16dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="10dp"
+            android:text="Explain Spring Boot"
+            android:textColor="#444444"
+            android:textSize="13sp"
+            android:visibility="gone"
+            app:layout_constraintTop_toBottomOf="@id/suggestionJava"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
 
-    </LinearLayout>
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+
+    <!-- ========================================================= -->
+    <!-- MESSAGES -->
+    <!-- ========================================================= -->
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/messages"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipToPadding="false"
+        android:paddingStart="12dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="100dp"
+        android:overScrollMode="always"
+        android:scrollbars="vertical"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/topBar"
+        app:layout_constraintBottom_toTopOf="@id/composerContainer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- ========================================================= -->
+    <!-- COMPOSER -->
+    <!-- ========================================================= -->
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/composerContainer"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/bg_composer"
+        android:padding="6dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+
+        <!-- Add -->
+
+        <ImageButton
+            android:id="@+id/addButton"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Add"
+            android:padding="10dp"
+            android:src="@drawable/ic_add"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+
+        <!-- Input -->
+
+        <EditText
+            android:id="@+id/user_input"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp"
+            android:background="@android:color/transparent"
+            android:gravity="center_vertical"
+            android:hint="Load a model to start chatting..."
+            android:inputType="textMultiLine"
+            android:maxLines="5"
+            android:minHeight="42dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:textColor="#111111"
+            android:textColorHint="#999999"
+            android:textSize="15sp"
+            app:layout_constraintStart_toEndOf="@id/addButton"
+            app:layout_constraintEnd_toStartOf="@id/sendButton"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+
+        <!-- Send / Stop -->
+
+        <ImageButton
+            android:id="@+id/sendButton"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="@drawable/bg_send_button"
+            android:contentDescription="Send message"
+            android:enabled="false"
+            android:padding="11dp"
+            android:src="@drawable/ic_send"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
 </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <include
+        android:id="@+id/navigationDrawer"
+        layout="@layout/layout_navigation_drawer"
+        android:layout_width="310dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start" />
+
+</androidx.drawerlayout.widget.DrawerLayout>

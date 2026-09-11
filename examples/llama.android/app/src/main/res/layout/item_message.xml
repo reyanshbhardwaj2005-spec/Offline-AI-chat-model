@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/messageContainer"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="8dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="6dp"
+    android:paddingBottom="6dp">
+
+    <!-- Assistant label -->
+    <TextView
+        android:id="@+id/assistantLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="✦  Offline AI"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:textColor="#6B6B6B"
+        android:paddingStart="8dp"
+        android:paddingBottom="4dp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/messageText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:maxWidth="310dp"
+        android:textSize="16sp"
+        android:lineSpacingExtra="4dp"
+        android:padding="14dp"
+        android:textColor="#202123"
+        android:textIsSelectable="true" />
+
+</LinearLayout>
