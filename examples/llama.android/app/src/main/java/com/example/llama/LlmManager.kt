@@ -1,348 +1,998 @@
 package com.example.llama
 
 import android.content.Context
-import com.arm.aichat.AiChat
+import com.arm.aichat.internal.InferenceEngineImpl
 import com.example.llama.memory.ContextBuilder
-import com.example.llama.memory.MemoryExtractor
+import com.example.llama.memory.ConversationEntity
 import com.example.llama.memory.MemoryManager
 import com.example.llama.memory.MessageEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 
 class LlmManager(context: Context) {
 
-    private val engine = AiChat.getInferenceEngine(context.applicationContext)
-    private val memoryManager = MemoryManager(context.applicationContext)
-    private val memoryExtractor = MemoryExtractor()
-    private val contextBuilder = ContextBuilder(memoryManager)
+    private val appContext = context.applicationContext
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val engineMutex = Mutex()
+    private val engine =
+        InferenceEngineImpl.getInstance(appContext)
+
+    /*
+     * MemoryManager owns the Room database.
+     */
+    private val memoryManager =
+        MemoryManager(appContext)
+
+    private val contextBuilder =
+        ContextBuilder(
+            memoryManager = memoryManager
+        )
+
+    /*
+     * Main manager scope.
+     */
+    private val scope =
+        CoroutineScope(
+            SupervisorJob() + Dispatchers.Default
+        )
+
+    /*
+     * Only one operation may use the native
+     * llama.cpp engine at a time.
+     */
+    private val engineMutex =
+        Mutex()
 
     @Volatile
     private var generationStopped = false
 
-    private companion object {
-        const val SUMMARY_TRIGGER = 20
-        const val SUMMARY_MESSAGE_COUNT = 8
-        const val RECENT_MESSAGE_COUNT = 12
-        const val SUMMARY_MAX_TOKENS = 300
-        const val UI_UPDATE_INTERVAL_MS = 50L
+    @Volatile
+    private var currentConversationId: Long = -1L
+
+    @Volatile
+    private var modelLoaded = false
+
+    private var summaryJob: Job? = null
+
+    companion object {
+
+        private const val SUMMARY_TRIGGER = 20
+
+        private const val SUMMARY_MESSAGE_COUNT = 8
+
+        private const val RECENT_MESSAGE_COUNT = 12
+
+        private const val SUMMARY_MAX_TOKENS = 300
+
+        private const val UI_UPDATE_INTERVAL_MS = 50L
+
         const val THINKING_SIGNAL = "__THINKING__"
     }
 
+    // ========================================================================
+    // CALLBACKS
+    // ========================================================================
+
     interface LoadCallback {
+
         fun onSuccess()
-        fun onError(error: Exception)
+
+        fun onError(exception: Exception)
     }
 
     interface ChatCallback {
-        fun onToken(token: String)
-        fun onComplete()
+
+        fun onToken(text: String)
+
+        fun onComplete(fullResponse: String)
+
         fun onStopped()
-        fun onError(error: Exception)
+
+        fun onError(exception: Exception)
     }
 
-    fun loadModel(path: String, callback: LoadCallback) {
+    interface ConversationCallback {
+
+        fun onSuccess(conversation: ConversationEntity)
+
+        fun onError(exception: Exception)
+    }
+
+    interface ConversationsCallback {
+
+        fun onSuccess(conversations: List<ConversationEntity>)
+
+        fun onError(exception: Exception)
+    }
+
+    interface MessagesCallback {
+
+        fun onSuccess(messages: List<MessageEntity>)
+
+        fun onError(exception: Exception)
+    }
+
+    // ========================================================================
+    // LOAD MODEL
+    // ========================================================================
+
+    fun loadModel(
+        modelPath: String,
+        callback: LoadCallback
+    ) {
+
         scope.launch {
+
             try {
-                engineMutex.withLock {
-                    generationStopped = false
-                    withContext(Dispatchers.IO) {
-                        engine.loadModel(path)
-                    }
-                    restoreConversation()
+
+                withMain {
+                    // Loading state is represented by MainActivity itself.
                 }
-                withContext(Dispatchers.Main) { callback.onSuccess() }
+
+                engineMutex.withLock {
+
+                    /*
+                     * Loading the model creates a fresh native
+                     * llama context.
+                     */
+                    engine.loadModel(modelPath)
+
+                    /*
+                     * Restore the most recently used conversation.
+                     */
+                    val conversation =
+                        memoryManager
+                            .getOrCreateCurrentConversation()
+
+                    currentConversationId =
+                        conversation.id
+
+                    modelLoaded = true
+
+                    /*
+                     * Rebuild the LLM context from Room.
+                     */
+                    rebuildConversationContext()
+                }
+
+                withMain {
+                    callback.onSuccess()
+                }
+
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { callback.onError(e) }
+
+                modelLoaded = false
+
+                withMain {
+                    callback.onError(e)
+                }
             }
         }
     }
 
-    private suspend fun restoreConversation() {
-        val context = withContext(Dispatchers.IO) {
-            contextBuilder.buildContext("", RECENT_MESSAGE_COUNT)
-        }
+    // ========================================================================
+    // SEND MESSAGE
+    // ========================================================================
 
-        if (context.isBlank()) return
-
-        engine.setSystemPrompt("""
-            You are an offline AI assistant.
-
-            You have access to persistent information about the user,
-            a summary of older conversations, and recent conversation history.
-
-            Use this information to maintain continuity.
-
-            IMPORTANT:
-            - Treat persistent memory as facts about the user.
-            - Treat conversation summary as previous conversation context.
-            - Treat recent conversation as actual previous dialogue.
-            - Do not claim to remember something that is not present.
-            - Do not invent missing information.
-            - If information conflicts, prefer the most recently updated information.
-            - Answer the user's current question normally.
-
-            $context
-        """.trimIndent())
-    }
-
-    fun sendMessage(message: String, callback: ChatCallback) {
-        generationStopped = false
+    fun sendMessage(
+        message: String,
+        callback: ChatCallback
+    ) {
 
         scope.launch {
+
             try {
-                withContext(Dispatchers.IO) {
-                    memoryManager.saveMessage("user", message)
+
+                if (!modelLoaded) {
+
+                    withMain {
+                        callback.onError(
+                            IllegalStateException(
+                                "Model is not loaded"
+                            )
+                        )
+                    }
+
+                    return@launch
                 }
 
-                val memories = memoryExtractor.extract(message)
+                /*
+                 * Capture the conversation before starting.
+                 */
+                val conversationId =
+                    currentConversationId
 
-                withContext(Dispatchers.IO) {
-                    memories.forEach { memory ->
-                        memoryManager.saveMemory(
-                            memory.key,
-                            memory.value,
-                            memory.importance
+                if (conversationId == -1L) {
+
+                    withMain {
+                        callback.onError(
+                            IllegalStateException(
+                                "No conversation is selected"
+                            )
+                        )
+                    }
+
+                    return@launch
+                }
+
+                generationStopped = false
+
+                /*
+                 * Save user message in the correct conversation.
+                 */
+                memoryManager.saveMessage(
+                    conversationId = conversationId,
+                    role = "user",
+                    content = message
+                )
+
+                /*
+                 * Tell the UI that generation has started.
+                 */
+                withMain {
+                    callback.onToken(
+                        THINKING_SIGNAL
+                    )
+                }
+
+                val responseBuilder =
+                    StringBuilder()
+
+                var lastUiUpdate =
+                    System.currentTimeMillis()
+
+                engineMutex.withLock {
+
+                    /*
+                     * Make sure the user has not switched chats
+                     * before generation starts.
+                     */
+                    if (
+                        conversationId != currentConversationId ||
+                        generationStopped
+                    ) {
+                        return@withLock
+                    }
+
+                    engine
+                        .sendUserPrompt(message)
+                        .collect { token ->
+
+                            if (
+                                generationStopped ||
+                                conversationId != currentConversationId
+                            ) {
+                                return@collect
+                            }
+
+                            responseBuilder.append(token)
+
+                            val now =
+                                System.currentTimeMillis()
+
+                            /*
+                             * Do not update the Android UI for
+                             * every individual native token.
+                             */
+                            if (
+                                now - lastUiUpdate >=
+                                UI_UPDATE_INTERVAL_MS
+                            ) {
+
+                                val text =
+                                    responseBuilder.toString()
+
+                                withMain {
+                                    callback.onToken(text)
+                                }
+
+                                lastUiUpdate = now
+                            }
+                        }
+                }
+
+                /*
+                 * Conversation was switched or generation
+                 * was stopped.
+                 */
+                if (
+                    generationStopped ||
+                    conversationId != currentConversationId
+                ) {
+
+                    withMain {
+                        callback.onStopped()
+                    }
+
+                    return@launch
+                }
+
+                val finalResponse =
+                    responseBuilder.toString()
+
+                /*
+                 * Make sure the final UI text is displayed.
+                 */
+                withMain {
+                    callback.onToken(finalResponse)
+                }
+
+                /*
+                 * Save assistant response into the SAME
+                 * conversation.
+                 */
+                memoryManager.saveMessage(
+                    conversationId = conversationId,
+                    role = "assistant",
+                    content = finalResponse
+                )
+
+                withMain {
+                    callback.onComplete(finalResponse)
+                }
+
+                /*
+                 * Summary runs after normal generation.
+                 */
+                updateSummaryIfNecessary(
+                    conversationId
+                )
+
+            } catch (e: Exception) {
+
+                if (generationStopped) {
+
+                    withMain {
+                        callback.onStopped()
+                    }
+
+                } else {
+
+                    withMain {
+                        callback.onError(e)
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // STOP GENERATION
+    // ========================================================================
+
+    fun stopGeneration() {
+
+        generationStopped = true
+
+        engine.stopGeneration()
+    }
+
+    // ========================================================================
+    // CREATE NEW CONVERSATION
+    // ========================================================================
+
+    fun createNewConversation(
+        callback: ConversationCallback
+    ) {
+
+        scope.launch {
+
+            try {
+
+                generationStopped = true
+
+                engine.stopGeneration()
+
+                /*
+                 * Create the new Room conversation first.
+                 */
+                val conversation =
+                    memoryManager.createConversation()
+
+                if (modelLoaded) {
+
+                    engineMutex.withLock {
+
+                        /*
+                         * Clear the native llama.cpp conversation
+                         * while keeping the model loaded.
+                         */
+                        engine.resetConversation()
+
+                        /*
+                         * Select the new conversation.
+                         */
+                        currentConversationId =
+                            conversation.id
+
+                        /*
+                         * Build a fresh context.
+                         */
+                        rebuildConversationContext()
+                    }
+
+                } else {
+
+                    currentConversationId =
+                        conversation.id
+                }
+
+                withMain {
+                    callback.onSuccess(conversation)
+                }
+
+            } catch (e: Exception) {
+
+                withMain {
+                    callback.onError(e)
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // SELECT EXISTING CONVERSATION
+    // ========================================================================
+
+    fun selectConversation(
+        conversationId: Long,
+        callback: ConversationCallback
+    ) {
+
+        scope.launch {
+
+            try {
+
+                generationStopped = true
+
+                engine.stopGeneration()
+
+                /*
+                 * Make sure the conversation actually exists.
+                 */
+                val conversation =
+                    memoryManager.getConversation(
+                        conversationId
+                    )
+                        ?: throw IllegalArgumentException(
+                            "Conversation not found: $conversationId"
+                        )
+
+                if (modelLoaded) {
+
+                    engineMutex.withLock {
+
+                        /*
+                         * IMPORTANT:
+                         *
+                         * Remove the previous conversation from
+                         * the native llama.cpp context.
+                         */
+                        engine.resetConversation()
+
+                        /*
+                         * Change the active Room conversation.
+                         */
+                        currentConversationId =
+                            conversation.id
+
+                        /*
+                         * Rebuild native context using ONLY
+                         * this conversation's data.
+                         */
+                        rebuildConversationContext()
+                    }
+
+                } else {
+
+                    currentConversationId =
+                        conversation.id
+                }
+
+                withMain {
+                    callback.onSuccess(conversation)
+                }
+
+            } catch (e: Exception) {
+
+                withMain {
+                    callback.onError(e)
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // DELETE CONVERSATION
+    // ========================================================================
+
+    fun deleteConversation(
+        conversationId: Long,
+        callback: ConversationCallback
+    ) {
+
+        scope.launch {
+
+            try {
+
+                generationStopped = true
+
+                engine.stopGeneration()
+
+                memoryManager.deleteConversation(
+                    conversationId
+                )
+
+                /*
+                 * If the deleted conversation was active,
+                 * choose/create another conversation.
+                 */
+                if (
+                    currentConversationId ==
+                    conversationId
+                ) {
+
+                    val newConversation =
+                        memoryManager
+                            .getOrCreateCurrentConversation()
+
+                    if (modelLoaded) {
+
+                        engineMutex.withLock {
+
+                            engine.resetConversation()
+
+                            currentConversationId =
+                                newConversation.id
+
+                            rebuildConversationContext()
+                        }
+
+                    } else {
+
+                        currentConversationId =
+                            newConversation.id
+                    }
+
+                    withMain {
+                        callback.onSuccess(newConversation)
+                    }
+
+                } else {
+
+                    withMain {
+                        callback.onSuccess(
+                            memoryManager.getConversation(
+                                currentConversationId
+                            ) ?: ConversationEntity(
+                                id = currentConversationId,
+                                title = "New Chat",
+                                createdAt = System.currentTimeMillis(),
+                                updatedAt = System.currentTimeMillis()
+                            )
                         )
                     }
                 }
 
-                withContext(Dispatchers.Main) {
-                    callback.onToken(THINKING_SIGNAL)
-                }
-
-                val responseBuilder = StringBuilder()
-                val uiBuffer = StringBuilder()
-                var lastUiUpdate = System.currentTimeMillis()
-
-                engine.sendUserPrompt(message).collect { token ->
-                    if (generationStopped) return@collect
-
-                    responseBuilder.append(token)
-                    uiBuffer.append(token)
-
-                    val now = System.currentTimeMillis()
-
-                    if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
-                        val textToSend = uiBuffer.toString()
-                        uiBuffer.clear()
-                        lastUiUpdate = now
-
-                        if (textToSend.isNotEmpty()) {
-                            withContext(Dispatchers.Main) {
-                                callback.onToken(textToSend)
-                            }
-                        }
-                    }
-                }
-
-                if (generationStopped) {
-                    withContext(Dispatchers.Main) { callback.onStopped() }
-                    return@launch
-                }
-
-                if (uiBuffer.isNotEmpty()) {
-                    val remaining = uiBuffer.toString()
-                    uiBuffer.clear()
-
-                    withContext(Dispatchers.Main) {
-                        callback.onToken(remaining)
-                    }
-                }
-
-                val completeResponse = responseBuilder.toString()
-
-                withContext(Dispatchers.IO) {
-                    memoryManager.saveMessage("assistant", completeResponse)
-                }
-
-                withContext(Dispatchers.Main) {
-                    callback.onComplete()
-                }
             } catch (e: Exception) {
-                if (generationStopped) {
-                    withContext(Dispatchers.Main) { callback.onStopped() }
-                } else {
-                    withContext(Dispatchers.Main) { callback.onError(e) }
+
+                withMain {
+                    callback.onError(e)
                 }
             }
         }
     }
 
-    fun stopGeneration() {
-        generationStopped = true
-        engine.stopGeneration()
-    }
+    // ========================================================================
+    // CURRENT CONVERSATION
+    // ========================================================================
 
-    private suspend fun generateConversationSummary(conversation: String): String {
-        val prompt = """
-            You are creating a memory summary for another AI assistant.
+    fun initializeConversation(
+        callback: ConversationCallback
+    ) {
 
-            Summarize the conversation below for future use.
+        scope.launch {
 
-            Preserve only information useful for future conversations.
+            try {
 
-            Preserve:
-            - important user facts
-            - projects
-            - goals
-            - decisions
-            - technical context
-            - unresolved problems
-            - preferences
-            - important previous discussion
+                val conversation =
+                    memoryManager
+                        .getOrCreateCurrentConversation()
 
-            Do not invent information.
-            Do not answer the conversation.
-            Do not add commentary.
-            Write a concise factual summary.
+                currentConversationId =
+                    conversation.id
 
-            CONVERSATION:
+                withMain {
+                    callback.onSuccess(conversation)
+                }
 
-            $conversation
-        """.trimIndent()
+            } catch (e: Exception) {
 
-        val result = StringBuilder()
-
-        engine.sendUserPrompt(
-            prompt,
-            predictLength = SUMMARY_MAX_TOKENS
-        ).collect { token -> result.append(token) }
-
-        return result.toString().trim()
-    }
-
-    private suspend fun buildSummaryInput(
-        previousSummary: String?,
-        messages: List<MessageEntity>
-    ): String {
-        if (messages.isEmpty()) return ""
-
-        return buildString {
-            appendLine("Summarize the following conversation for future use by an offline AI assistant.")
-            appendLine()
-            appendLine("Preserve:")
-            appendLine("- important user facts")
-            appendLine("- user's goals")
-            appendLine("- projects")
-            appendLine("- decisions")
-            appendLine("- problems")
-            appendLine("- preferences")
-            appendLine("- important technical context")
-            appendLine()
-            appendLine("Do not invent information.")
-            appendLine()
-
-            if (!previousSummary.isNullOrBlank()) {
-                appendLine("PREVIOUS SUMMARY:")
-                appendLine(previousSummary)
-                appendLine()
-            }
-
-            appendLine("OLDER CONVERSATION:")
-
-            messages.forEach { message ->
-                val role = if (message.role == "user") "User" else "Assistant"
-                appendLine("$role: ${message.content}")
+                withMain {
+                    callback.onError(e)
+                }
             }
         }
     }
 
-    private suspend fun updateConversationSummary() {
-        val messageCount = withContext(Dispatchers.IO) {
-            memoryManager.getMessageCount()
-        }
+    fun getCurrentConversationId(): Long {
 
-        if (messageCount < SUMMARY_TRIGGER) return
-
-        val oldMessages = withContext(Dispatchers.IO) {
-            memoryManager.getOldMessages(SUMMARY_MESSAGE_COUNT)
-        }
-
-        if (oldMessages.isEmpty()) return
-
-        val previousSummary = withContext(Dispatchers.IO) {
-            memoryManager.getConversationSummary()
-        }
-
-        val summaryInput = buildSummaryInput(previousSummary, oldMessages)
-        if (summaryInput.isBlank()) return
-
-        val summary = generateConversationSummary(summaryInput)
-        if (summary.isBlank()) return
-
-        withContext(Dispatchers.IO) {
-            memoryManager.saveConversationSummary(summary)
-            memoryManager.deleteOldMessages(SUMMARY_MESSAGE_COUNT)
-        }
-
-        rebuildConversationContext()
+        return currentConversationId
     }
+
+    fun getCurrentConversation(
+        callback: (ConversationEntity?) -> Unit
+    ) {
+
+        scope.launch {
+
+            try {
+
+                val conversation =
+                    memoryManager.getConversation(
+                        currentConversationId
+                    )
+
+                withMain {
+                    callback(conversation)
+                }
+
+            } catch (_: Exception) {
+
+                withMain {
+                    callback(null)
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // ALL CONVERSATIONS
+    // ========================================================================
+
+    /*
+     * Name matches MainActivity.
+     */
+    fun getConversations(
+        callback: ConversationsCallback
+    ) {
+
+        scope.launch {
+
+            try {
+
+                val conversations =
+                    memoryManager.getAllConversations()
+
+                withMain {
+                    callback.onSuccess(conversations)
+                }
+
+            } catch (e: Exception) {
+
+                withMain {
+                    callback.onError(e)
+                }
+            }
+        }
+    }
+
+    /*
+     * Keep this alias available as well.
+     */
+    fun getAllConversations(
+        callback: ConversationsCallback
+    ) {
+
+        getConversations(callback)
+    }
+
+    // ========================================================================
+    // GET CONVERSATION MESSAGES
+    // ========================================================================
+
+    /*
+     * Name matches MainActivity.
+     */
+    fun getConversationMessages(
+        conversationId: Long,
+        callback: MessagesCallback
+    ) {
+
+        scope.launch {
+
+            try {
+
+                val messages =
+                    memoryManager.getAllMessages(
+                        conversationId
+                    )
+
+                withMain {
+                    callback.onSuccess(messages)
+                }
+
+            } catch (e: Exception) {
+
+                withMain {
+                    callback.onError(e)
+                }
+            }
+        }
+    }
+
+    /*
+     * Keep this alias available too.
+     */
+    fun getMessages(
+        conversationId: Long,
+        callback: MessagesCallback
+    ) {
+
+        getConversationMessages(
+            conversationId,
+            callback
+        )
+    }
+
+    // ========================================================================
+    // REBUILD CONTEXT
+    // ========================================================================
 
     private suspend fun rebuildConversationContext() {
-        val context = withContext(Dispatchers.IO) {
-            contextBuilder.buildContext("", RECENT_MESSAGE_COUNT)
+
+        if (currentConversationId == -1L) {
+            return
         }
 
-        if (context.isBlank()) return
+        /*
+         * ContextBuilder combines:
+         *
+         * 1. Global persistent memories
+         * 2. Current conversation summary
+         * 3. Recent messages from CURRENT conversation
+         */
+        val prompt =
+            contextBuilder.buildContext(
+                conversationId =
+                    currentConversationId,
 
-        engine.setSystemPrompt("""
-            You are an offline AI assistant.
+                currentMessage = "",
 
-            Maintain continuity with the user using the information provided below.
+                recentMessageLimit =
+                    RECENT_MESSAGE_COUNT
+            )
 
-            IMPORTANT RULES:
-            - Persistent memory contains facts about the user.
-            - Conversation summary contains important older context.
-            - Recent conversation contains the latest dialogue.
-            - Use information only when relevant.
-            - Do not invent missing information.
-            - If information conflicts, prefer the most recently updated persistent memory.
-            - Answer the user's current question normally.
-
-            $context
-        """.trimIndent())
+        /*
+         * resetConversation() makes the native engine
+         * ready to receive a new system prompt.
+         */
+        engine.setSystemPrompt(prompt)
     }
 
-    fun setSystemPrompt(prompt: String, callback: LoadCallback) {
-        scope.launch {
-            try {
-                engineMutex.withLock {
-                    engine.setSystemPrompt(prompt)
+    // ========================================================================
+    // SUMMARY
+    // ========================================================================
+
+    private fun updateSummaryIfNecessary(
+        conversationId: Long
+    ) {
+
+        summaryJob?.cancel()
+
+        summaryJob =
+            scope.launch {
+
+                try {
+
+                    val count =
+                        memoryManager.getMessageCount(
+                            conversationId
+                        )
+
+                    if (
+                        count <
+                        SUMMARY_TRIGGER
+                    ) {
+                        return@launch
+                    }
+
+                    generateConversationSummary(
+                        conversationId
+                    )
+
+                } catch (_: Exception) {
+                    /*
+                     * Summary failure must never
+                     * break normal chat.
+                     */
                 }
-                withContext(Dispatchers.Main) { callback.onSuccess() }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { callback.onError(e) }
+            }
+    }
+
+    private suspend fun generateConversationSummary(
+        conversationId: Long
+    ) {
+
+        /*
+         * Do not summarize a conversation that is no longer
+         * the active conversation.
+         */
+        if (conversationId != currentConversationId) {
+            return
+        }
+
+        val messages =
+            memoryManager.getRecentMessages(
+                conversationId,
+                SUMMARY_MESSAGE_COUNT
+            )
+
+        if (messages.isEmpty()) {
+            return
+        }
+
+        val promptBuilder =
+            StringBuilder()
+
+        promptBuilder.append(
+            """
+            Summarize the following conversation.
+
+            Keep only important facts, decisions,
+            user preferences, goals, and useful context.
+
+            Do not add information that was not present.
+
+            Conversation:
+
+            """.trimIndent()
+        )
+
+        for (message in messages) {
+
+            promptBuilder.append("\n")
+            promptBuilder.append(message.role)
+            promptBuilder.append(": ")
+            promptBuilder.append(message.content)
+        }
+
+        val summaryBuilder =
+            StringBuilder()
+
+        /*
+         * Summary inference uses the same native engine.
+         *
+         * Therefore we temporarily create a clean native
+         * conversation, generate the summary, and then
+         * RESTORE the actual active conversation.
+         */
+        engineMutex.withLock {
+
+            if (conversationId != currentConversationId) {
+                return@withLock
+            }
+
+            /*
+             * Clear current chat context.
+             */
+            engine.resetConversation()
+
+            /*
+             * Give the summary generator a minimal
+             * system prompt.
+             */
+            engine.setSystemPrompt(
+                "You are a conversation summarizer. " +
+                    "Return only a concise factual summary."
+            )
+
+            engine
+                .sendUserPrompt(
+                    promptBuilder.toString(),
+                    predictLength =
+                        SUMMARY_MAX_TOKENS
+                )
+                .collect { token ->
+
+                    summaryBuilder.append(token)
+                }
+
+            val summary =
+                summaryBuilder
+                    .toString()
+                    .trim()
+
+            if (summary.isNotEmpty()) {
+
+                memoryManager.saveConversationSummary(
+                    conversationId = conversationId,
+                    summary = summary
+                )
+            }
+
+            /*
+             * VERY IMPORTANT:
+             *
+             * Summary inference changed the native
+             * conversation state.
+             *
+             * Restore the actual chat context before
+             * releasing the mutex.
+             */
+            if (
+                conversationId ==
+                currentConversationId
+            ) {
+
+                engine.resetConversation()
+
+                rebuildConversationContext()
             }
         }
     }
 
-    fun saveMemory(key: String, value: String, importance: Int = 1) {
+    // ========================================================================
+    // CLEANUP
+    // ========================================================================
+
+    fun cleanUp() {
+
+        generationStopped = true
+
+        engine.stopGeneration()
+
         scope.launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    memoryManager.saveMemory(key, value, importance)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+
+            engineMutex.withLock {
+
+                engine.cleanUp()
+
+                modelLoaded = false
             }
         }
     }
+
+    // ========================================================================
+    // DESTROY
+    // ========================================================================
 
     fun destroy() {
+
         generationStopped = true
+
         engine.stopGeneration()
-        engine.destroy()
-        memoryManager.close()
-        scope.cancel()
+
+        summaryJob?.cancel()
+
+        scope.launch {
+
+            engineMutex.withLock {
+
+                engine.destroy()
+
+                modelLoaded = false
+            }
+
+            scope.coroutineContext.cancel()
+        }
+    }
+
+    // ========================================================================
+    // MAIN THREAD CALLBACK HELPER
+    // ========================================================================
+
+    private suspend fun withMain(
+        block: suspend () -> Unit
+    ) {
+        kotlinx.coroutines.withContext(Dispatchers.Main) {
+            block()
+        }
     }
 }

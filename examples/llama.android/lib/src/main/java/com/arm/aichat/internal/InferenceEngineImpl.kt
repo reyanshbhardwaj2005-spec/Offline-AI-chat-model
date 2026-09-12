@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.arm.aichat.InferenceEngine
 import com.arm.aichat.UnsupportedArchitectureException
-import com.arm.aichat.internal.InferenceEngineImpl.Companion.getInstance
 import dalvik.annotation.optimization.FastNative
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -25,25 +24,10 @@ import java.io.File
 import java.io.IOException
 
 /**
- * JNI wrapper for the llama.cpp library providing Android-friendly access to large language models.
- *
- * This class implements a singleton pattern for managing the lifecycle of a single LLM instance.
- * All operations are executed on a dedicated single-threaded dispatcher to ensure thread safety
- * with the underlying C++ native code.
- *
- * The typical usage flow is:
- * 1. Get instance via [getInstance]
- * 2. Load a model with [loadModel]
- * 3. Send prompts with [sendUserPrompt]
- * 4. Generate responses as token streams
- * 5. Perform [cleanUp] when done with a model
- * 6. Properly [destroy] when completely done
- *
- * State transitions are managed automatically and validated at each operation.
- *
- * @see ai_chat.cpp for the native implementation details
+ * JNI wrapper for the llama.cpp library providing Android-friendly access
+ * to large language models.
  */
-internal class InferenceEngineImpl private constructor(
+class InferenceEngineImpl private constructor(
     private val nativeLibDir: String
 ) : InferenceEngine {
 
@@ -54,36 +38,56 @@ internal class InferenceEngineImpl private constructor(
         private var instance: InferenceEngine? = null
 
         /**
-         * Create or obtain [InferenceEngineImpl]'s single instance.
-         *
-         * @param Context for obtaining native library directory
-         * @throws IllegalArgumentException if native library path is invalid
-         * @throws UnsatisfiedLinkError if library failed to load
+         * Create or obtain InferenceEngineImpl's single instance.
          */
-        internal fun getInstance(context: Context) =
+        fun getInstance(context: Context) =
             instance ?: synchronized(this) {
-                val nativeLibDir = context.applicationInfo.nativeLibraryDir
-                require(nativeLibDir.isNotBlank()) { "Expected a valid native library path!" }
+
+                val nativeLibDir =
+                    context.applicationInfo.nativeLibraryDir
+
+                require(nativeLibDir.isNotBlank()) {
+                    "Expected a valid native library path!"
+                }
 
                 try {
-                    Log.i(TAG, "Instantiating InferenceEngineImpl,,,")
-                    InferenceEngineImpl(nativeLibDir).also { instance = it }
+
+                    Log.i(
+                        TAG,
+                        "Instantiating InferenceEngineImpl..."
+                    )
+
+                    InferenceEngineImpl(nativeLibDir)
+                        .also {
+                            instance = it
+                        }
+
                 } catch (e: UnsatisfiedLinkError) {
-                    Log.e(TAG, "Failed to load native library from $nativeLibDir", e)
+
+                    Log.e(
+                        TAG,
+                        "Failed to load native library from $nativeLibDir",
+                        e
+                    )
+
                     throw e
                 }
             }
     }
 
-    /**
-     * JNI methods
-     * @see ai_chat.cpp
-     */
-    @FastNative
-    private external fun init(nativeLibDir: String)
+    // -------------------------------------------------------------------------
+    // JNI METHODS
+    // -------------------------------------------------------------------------
 
     @FastNative
-    private external fun load(modelPath: String): Int
+    private external fun init(
+        nativeLibDir: String
+    )
+
+    @FastNative
+    private external fun load(
+        modelPath: String
+    ): Int
 
     @FastNative
     private external fun prepare(): Int
@@ -92,13 +96,39 @@ internal class InferenceEngineImpl private constructor(
     private external fun systemInfo(): String
 
     @FastNative
-    private external fun benchModel(pp: Int, tg: Int, pl: Int, nr: Int): String
+    private external fun benchModel(
+        pp: Int,
+        tg: Int,
+        pl: Int,
+        nr: Int
+    ): String
 
     @FastNative
-    private external fun processSystemPrompt(systemPrompt: String): Int
+    private external fun processSystemPrompt(
+        systemPrompt: String
+    ): Int
 
     @FastNative
-    private external fun processUserPrompt(userPrompt: String, predictLength: Int): Int
+    private external fun processUserPrompt(
+        userPrompt: String,
+        predictLength: Int
+    ): Int
+
+    /**
+     * Native method used to clear the current llama.cpp
+     * conversation state and KV cache without unloading
+     * the model.
+     *
+     * IMPORTANT:
+     *
+     * This is deliberately called nativeResetConversation()
+     * instead of resetConversation().
+     *
+     * The latter is already the method required by the
+     * InferenceEngine interface.
+     */
+    @FastNative
+    private external fun nativeResetConversation()
 
     @FastNative
     private external fun generateNextToken(): String?
@@ -109,111 +139,355 @@ internal class InferenceEngineImpl private constructor(
     @FastNative
     private external fun shutdown()
 
-    private val _state =
-        MutableStateFlow<InferenceEngine.State>(InferenceEngine.State.Uninitialized)
-    override val state: StateFlow<InferenceEngine.State> = _state.asStateFlow()
+    // -------------------------------------------------------------------------
+    // STATE
+    // -------------------------------------------------------------------------
 
+    private val _state =
+        MutableStateFlow<InferenceEngine.State>(
+            InferenceEngine.State.Uninitialized
+        )
+
+    override val state: StateFlow<InferenceEngine.State> =
+        _state.asStateFlow()
+
+    /**
+     * True when the engine is allowed to process a system prompt.
+     *
+     * After a system prompt is processed this becomes false.
+     *
+     * resetConversation() changes it back to true.
+     */
     private var _readyForSystemPrompt = false
+
     @Volatile
     private var _cancelGeneration = false
 
+    // -------------------------------------------------------------------------
+    // COROUTINES
+    // -------------------------------------------------------------------------
+
     /**
-     * Single-threaded coroutine dispatcher & scope for LLama asynchronous operations
+     * All native llama.cpp operations are executed on a single thread.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val llamaDispatcher = Dispatchers.IO.limitedParallelism(1)
-    private val llamaScope = CoroutineScope(llamaDispatcher + SupervisorJob())
+    private val llamaDispatcher =
+        Dispatchers.IO.limitedParallelism(1)
+
+    private val llamaScope =
+        CoroutineScope(
+            llamaDispatcher + SupervisorJob()
+        )
+
+    // -------------------------------------------------------------------------
+    // INITIALIZATION
+    // -------------------------------------------------------------------------
 
     init {
+
         llamaScope.launch {
+
             try {
-                check(_state.value is InferenceEngine.State.Uninitialized) {
-                    "Cannot load native library in ${_state.value.javaClass.simpleName}!"
+
+                check(
+                    _state.value is
+                        InferenceEngine.State.Uninitialized
+                ) {
+                    "Cannot load native library in " +
+                        "${_state.value.javaClass.simpleName}!"
                 }
-                _state.value = InferenceEngine.State.Initializing
-                Log.i(TAG, "Loading native library...")
+
+                _state.value =
+                    InferenceEngine.State.Initializing
+
+                Log.i(
+                    TAG,
+                    "Loading native library..."
+                )
+
                 System.loadLibrary("ai-chat")
+
                 init(nativeLibDir)
-                _state.value = InferenceEngine.State.Initialized
-                Log.i(TAG, "Native library loaded! System info: \n${systemInfo()}")
+
+                _state.value =
+                    InferenceEngine.State.Initialized
+
+                Log.i(
+                    TAG,
+                    "Native library loaded! System info:\n" +
+                        systemInfo()
+                )
 
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load native library", e)
+
+                Log.e(
+                    TAG,
+                    "Failed to load native library",
+                    e
+                )
+
                 throw e
             }
         }
     }
 
+    // -------------------------------------------------------------------------
+    // LOAD MODEL
+    // -------------------------------------------------------------------------
+
+    override suspend fun loadModel(
+        pathToModel: String
+    ) = withContext(llamaDispatcher) {
+
+        check(
+            _state.value is InferenceEngine.State.Initialized
+        ) {
+            "Cannot load model in " +
+                "${_state.value.javaClass.simpleName}!"
+        }
+
+        try {
+
+            Log.i(
+                TAG,
+                "Checking access to model file...\n$pathToModel"
+            )
+
+            File(pathToModel).let {
+
+                require(it.exists()) {
+                    "File not found"
+                }
+
+                require(it.isFile) {
+                    "Not a valid file"
+                }
+
+                require(it.canRead()) {
+                    "Cannot read file"
+                }
+            }
+
+            Log.i(
+                TAG,
+                "Loading model...\n$pathToModel"
+            )
+
+            _readyForSystemPrompt = false
+
+            _state.value =
+                InferenceEngine.State.LoadingModel
+
+            load(pathToModel).let {
+
+                if (it != 0) {
+                    throw UnsupportedArchitectureException()
+                }
+            }
+
+            prepare().let {
+
+                if (it != 0) {
+                    throw IOException(
+                        "Failed to prepare resources"
+                    )
+                }
+            }
+
+            Log.i(
+                TAG,
+                "Model loaded!"
+            )
+
+            /*
+             * A freshly loaded model is ready to receive
+             * its system prompt.
+             */
+            _readyForSystemPrompt = true
+
+            _cancelGeneration = false
+
+            _state.value =
+                InferenceEngine.State.ModelReady
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                (e.message ?: "Error loading model") +
+                    "\n" +
+                    pathToModel,
+                e
+            )
+
+            _state.value =
+                InferenceEngine.State.Error(e)
+
+            throw e
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // SYSTEM PROMPT
+    // -------------------------------------------------------------------------
+
+    override suspend fun setSystemPrompt(
+        prompt: String
+    ) = withContext(llamaDispatcher) {
+
+        require(prompt.isNotBlank()) {
+            "Cannot process empty system prompt!"
+        }
+
+        check(_readyForSystemPrompt) {
+            "System prompt must be set RIGHT AFTER model loaded " +
+                "or after resetting the conversation!"
+        }
+
+        check(
+            _state.value is InferenceEngine.State.ModelReady
+        ) {
+            "Cannot process system prompt in " +
+                "${_state.value.javaClass.simpleName}!"
+        }
+
+        try {
+
+            Log.i(
+                TAG,
+                "Sending system prompt..."
+            )
+
+            _readyForSystemPrompt = false
+
+            _state.value =
+                InferenceEngine.State.ProcessingSystemPrompt
+
+            processSystemPrompt(prompt).let { result ->
+
+                if (result != 0) {
+
+                    val exception =
+                        RuntimeException(
+                            "Failed to process system prompt: $result"
+                        )
+
+                    _state.value =
+                        InferenceEngine.State.Error(exception)
+
+                    throw exception
+                }
+            }
+
+            Log.i(
+                TAG,
+                "System prompt processed! Awaiting user prompt..."
+            )
+
+            _state.value =
+                InferenceEngine.State.ModelReady
+
+        } catch (e: Exception) {
+
+            if (_state.value !is InferenceEngine.State.Error) {
+                _state.value =
+                    InferenceEngine.State.Error(e)
+            }
+
+            throw e
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // RESET CONVERSATION
+    // -------------------------------------------------------------------------
+
     /**
-     * Load the LLM
+     * Reset only the current conversation state.
+     *
+     * The model remains loaded.
+     *
+     * Example:
+     *
+     * Chat A
+     *   ↓
+     * resetConversation()
+     *   ↓
+     * setSystemPrompt(Chat B context)
+     *   ↓
+     * Chat B
+     *
+     * The native llama.cpp KV cache and conversation state
+     * are cleared by nativeResetConversation().
      */
-    override suspend fun loadModel(pathToModel: String) =
+    override suspend fun resetConversation() {
+
         withContext(llamaDispatcher) {
-            check(_state.value is InferenceEngine.State.Initialized) {
-                "Cannot load model in ${_state.value.javaClass.simpleName}!"
+
+            check(
+                _state.value is
+                    InferenceEngine.State.ModelReady
+            ) {
+                "Model must be ready before resetting conversation"
             }
 
             try {
-                Log.i(TAG, "Checking access to model file... \n$pathToModel")
-                File(pathToModel).let {
-                    require(it.exists()) { "File not found" }
-                    require(it.isFile) { "Not a valid file" }
-                    require(it.canRead()) { "Cannot read file" }
-                }
 
-                Log.i(TAG, "Loading model... \n$pathToModel")
-                _readyForSystemPrompt = false
-                _state.value = InferenceEngine.State.LoadingModel
-                load(pathToModel).let {
-                    // TODO-han.yin: find a better way to pass other error codes
-                    if (it != 0) throw UnsupportedArchitectureException()
-                }
-                prepare().let {
-                    if (it != 0) throw IOException("Failed to prepare resources")
-                }
-                Log.i(TAG, "Model loaded!")
+                Log.i(
+                    TAG,
+                    "Resetting native conversation context..."
+                )
+
+                /*
+                 * Stop any possible generation.
+                 */
+                _cancelGeneration = true
+
+                /*
+                 * Clear llama.cpp conversation/KV state.
+                 *
+                 * IMPORTANT:
+                 *
+                 * The model itself is NOT unloaded.
+                 */
+                nativeResetConversation()
+
+                /*
+                 * The native engine is now empty and can
+                 * receive a new system prompt.
+                 */
                 _readyForSystemPrompt = true
 
                 _cancelGeneration = false
-                _state.value = InferenceEngine.State.ModelReady
+
+                _state.value =
+                    InferenceEngine.State.ModelReady
+
+                Log.i(
+                    TAG,
+                    "Conversation context reset successfully."
+                )
+
             } catch (e: Exception) {
-                Log.e(TAG, (e.message ?: "Error loading model") + "\n" + pathToModel, e)
-                _state.value = InferenceEngine.State.Error(e)
+
+                Log.e(
+                    TAG,
+                    "Failed to reset conversation",
+                    e
+                )
+
+                _state.value =
+                    InferenceEngine.State.Error(e)
+
                 throw e
             }
         }
+    }
 
-    /**
-     * Process the plain text system prompt
-     *
-     * TODO-han.yin: return error code if system prompt not correct processed?
-     */
-    override suspend fun setSystemPrompt(prompt: String) =
-        withContext(llamaDispatcher) {
-            require(prompt.isNotBlank()) { "Cannot process empty system prompt!" }
-            check(_readyForSystemPrompt) { "System prompt must be set ** RIGHT AFTER ** model loaded!" }
-            check(_state.value is InferenceEngine.State.ModelReady) {
-                "Cannot process system prompt in ${_state.value.javaClass.simpleName}!"
-            }
+    // -------------------------------------------------------------------------
+    // SEND USER PROMPT
+    // -------------------------------------------------------------------------
 
-            Log.i(TAG, "Sending system prompt...")
-            _readyForSystemPrompt = false
-            _state.value = InferenceEngine.State.ProcessingSystemPrompt
-            processSystemPrompt(prompt).let { result ->
-                if (result != 0) {
-                    RuntimeException("Failed to process system prompt: $result").also {
-                        _state.value = InferenceEngine.State.Error(it)
-                        throw it
-                    }
-                }
-            }
-            Log.i(TAG, "System prompt processed! Awaiting user prompt...")
-            _state.value = InferenceEngine.State.ModelReady
-        }
-
-    /**
-     * Send plain text user prompt to LLM, which starts generating tokens in a [Flow]
-     */
     override fun sendUserPrompt(
         message: String,
         predictLength: Int
@@ -224,7 +498,8 @@ internal class InferenceEngineImpl private constructor(
         }
 
         check(
-            _state.value is InferenceEngine.State.ModelReady
+            _state.value is
+                InferenceEngine.State.ModelReady
         ) {
             "Model is not ready"
         }
@@ -236,9 +511,15 @@ internal class InferenceEngineImpl private constructor(
                 "Sending user prompt..."
             )
 
-            // Reset cancellation for this generation
+            /*
+             * Reset cancellation for this generation.
+             */
             _cancelGeneration = false
 
+            /*
+             * We already have a system prompt.
+             * The next operation is the user prompt.
+             */
             _readyForSystemPrompt = false
 
             _state.value =
@@ -262,7 +543,8 @@ internal class InferenceEngineImpl private constructor(
 
             Log.i(
                 TAG,
-                "User prompt processed. Generating assistant prompt..."
+                "User prompt processed. " +
+                    "Generating assistant prompt..."
             )
 
             _state.value =
@@ -273,7 +555,6 @@ internal class InferenceEngineImpl private constructor(
                 generateNextToken()?.let { utf8token ->
 
                     if (utf8token.isNotEmpty()) {
-
                         emit(utf8token)
                     }
 
@@ -284,14 +565,14 @@ internal class InferenceEngineImpl private constructor(
 
                 Log.i(
                     TAG,
-                    "Assistant generation aborted per requested."
+                    "Assistant generation aborted."
                 )
 
             } else {
 
                 Log.i(
                     TAG,
-                    "Assistant generation complete. Awaiting user prompt..."
+                    "Assistant generation complete."
                 )
             }
 
@@ -302,7 +583,7 @@ internal class InferenceEngineImpl private constructor(
 
             Log.i(
                 TAG,
-                "Assistant generation's flow collection cancelled."
+                "Assistant generation flow collection cancelled."
             )
 
             _state.value =
@@ -326,73 +607,170 @@ internal class InferenceEngineImpl private constructor(
 
     }.flowOn(llamaDispatcher)
 
-    /**
-     * Benchmark the model
-     */
+    // -------------------------------------------------------------------------
+    // STOP GENERATION
+    // -------------------------------------------------------------------------
+
     override fun stopGeneration() {
-        if (_state.value is InferenceEngine.State.Generating || _state.value is InferenceEngine.State.ProcessingUserPrompt) {
-            Log.i(TAG, "Stopping generation...")
+
+        if (
+            _state.value is
+                InferenceEngine.State.Generating ||
+            _state.value is
+                InferenceEngine.State.ProcessingUserPrompt
+        ) {
+
+            Log.i(
+                TAG,
+                "Stopping generation..."
+            )
+
             _cancelGeneration = true
         }
     }
 
-    override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String =
+    // -------------------------------------------------------------------------
+    // BENCHMARK
+    // -------------------------------------------------------------------------
+
+    override suspend fun bench(
+        pp: Int,
+        tg: Int,
+        pl: Int,
+        nr: Int
+    ): String =
         withContext(llamaDispatcher) {
-            check(_state.value is InferenceEngine.State.ModelReady) {
+
+            check(
+                _state.value is
+                    InferenceEngine.State.ModelReady
+            ) {
                 "Benchmark request discarded due to: $state"
             }
-            Log.i(TAG, "Start benchmark (pp: $pp, tg: $tg, pl: $pl, nr: $nr)")
-            _readyForSystemPrompt = false   // Just to be safe
-            _state.value = InferenceEngine.State.Benchmarking
-            benchModel(pp, tg, pl, nr).also {
-                _state.value = InferenceEngine.State.ModelReady
+
+            Log.i(
+                TAG,
+                "Start benchmark " +
+                    "(pp: $pp, tg: $tg, pl: $pl, nr: $nr)"
+            )
+
+            /*
+             * Benchmarking should not allow a new system prompt.
+             */
+            _readyForSystemPrompt = false
+
+            _state.value =
+                InferenceEngine.State.Benchmarking
+
+            benchModel(
+                pp,
+                tg,
+                pl,
+                nr
+            ).also {
+
+                _state.value =
+                    InferenceEngine.State.ModelReady
             }
         }
 
+    // -------------------------------------------------------------------------
+    // CLEANUP
+    // -------------------------------------------------------------------------
+
     /**
-     * Unloads the model and frees resources, or reset error states
+     * Unload the model and free resources.
      */
     override fun cleanUp() {
+
         _cancelGeneration = true
+
         runBlocking(llamaDispatcher) {
-            when (val state = _state.value) {
+
+            when (val currentState = _state.value) {
+
                 is InferenceEngine.State.ModelReady -> {
-                    Log.i(TAG, "Unloading model and free resources...")
+
+                    Log.i(
+                        TAG,
+                        "Unloading model and freeing resources..."
+                    )
+
                     _readyForSystemPrompt = false
-                    _state.value = InferenceEngine.State.UnloadingModel
+
+                    _state.value =
+                        InferenceEngine.State.UnloadingModel
 
                     unload()
 
-                    _state.value = InferenceEngine.State.Initialized
-                    Log.i(TAG, "Model unloaded!")
-                    Unit
+                    _state.value =
+                        InferenceEngine.State.Initialized
+
+                    Log.i(
+                        TAG,
+                        "Model unloaded!"
+                    )
                 }
 
                 is InferenceEngine.State.Error -> {
-                    Log.i(TAG, "Resetting error states...")
-                    _state.value = InferenceEngine.State.Initialized
-                    Log.i(TAG, "States reset!")
-                    Unit
+
+                    Log.i(
+                        TAG,
+                        "Resetting error states..."
+                    )
+
+                    _state.value =
+                        InferenceEngine.State.Initialized
+
+                    Log.i(
+                        TAG,
+                        "States reset!"
+                    )
                 }
 
-                else -> throw IllegalStateException("Cannot unload model in ${state.javaClass.simpleName}")
+                else -> {
+
+                    throw IllegalStateException(
+                        "Cannot unload model in " +
+                            "${currentState.javaClass.simpleName}"
+                    )
+                }
             }
         }
     }
 
+    // -------------------------------------------------------------------------
+    // DESTROY
+    // -------------------------------------------------------------------------
+
     /**
-     * Cancel all ongoing coroutines and free GGML backends
+     * Completely destroy the native engine.
      */
     override fun destroy() {
+
         _cancelGeneration = true
+
         runBlocking(llamaDispatcher) {
+
             _readyForSystemPrompt = false
-            when(_state.value) {
-                is InferenceEngine.State.Uninitialized -> {}
-                is InferenceEngine.State.Initialized -> shutdown()
-                else -> { unload(); shutdown() }
+
+            when (_state.value) {
+
+                is InferenceEngine.State.Uninitialized -> {
+                    // Nothing to do.
+                }
+
+                is InferenceEngine.State.Initialized -> {
+                    shutdown()
+                }
+
+                else -> {
+                    unload()
+                    shutdown()
+                }
             }
         }
+
         llamaScope.cancel()
     }
 }

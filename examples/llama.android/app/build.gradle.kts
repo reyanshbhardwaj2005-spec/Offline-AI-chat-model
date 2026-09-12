@@ -6,6 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.llama"
+
     compileSdk = 36
 
     defaultConfig {
@@ -18,6 +19,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         vectorDrawables {
             useSupportLibrary = true
         }
@@ -25,37 +27,37 @@ android {
 
     buildTypes {
         debug {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android.txt"),
-                "proguard-rules.pro"
-            )
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
+
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
+
 val room_version = "3.0.2"
+
 dependencies {
+
     implementation(libs.bundles.androidx)
     implementation(libs.material)
 
     implementation(project(":lib"))
 
     implementation("androidx.core:core:1.17.0")
-
-    val room_version = "3.0.2"
 
     implementation("androidx.room3:room3-runtime:$room_version")
     ksp("androidx.room3:room3-compiler:$room_version")

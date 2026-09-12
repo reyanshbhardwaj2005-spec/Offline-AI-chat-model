@@ -6,7 +6,9 @@ import androidx.room3.PrimaryKey
 @Entity(tableName = "conversation_summary")
 data class ConversationSummaryEntity(
     @PrimaryKey
-    val id: Int = 1,
+    val conversationId: Long,
+
     val summary: String,
+
     val updatedAt: Long = System.currentTimeMillis()
 )

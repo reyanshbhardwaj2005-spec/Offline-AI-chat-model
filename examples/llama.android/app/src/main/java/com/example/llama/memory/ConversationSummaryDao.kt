@@ -11,9 +11,19 @@ interface ConversationSummaryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun save(summary: ConversationSummaryEntity)
 
-    @Query("SELECT * FROM conversation_summary WHERE id = 1 LIMIT 1")
-    suspend fun getSummary(): ConversationSummaryEntity?
+    @Query("""
+        SELECT * FROM conversation_summary
+        WHERE conversationId = :conversationId
+        LIMIT 1
+    """)
+    suspend fun getSummary(conversationId: Long): ConversationSummaryEntity?
+
+    @Query("""
+        DELETE FROM conversation_summary
+        WHERE conversationId = :conversationId
+    """)
+    suspend fun deleteSummary(conversationId: Long)
 
     @Query("DELETE FROM conversation_summary")
-    suspend fun deleteSummary()
+    suspend fun deleteAll()
 }

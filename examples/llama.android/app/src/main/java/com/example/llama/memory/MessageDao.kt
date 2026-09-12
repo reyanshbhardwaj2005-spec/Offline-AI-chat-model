@@ -10,33 +10,60 @@ interface MessageDao {
     @Insert
     suspend fun insert(message: MessageEntity): Long
 
-    @Query("SELECT * FROM messages ORDER BY timestamp ASC")
-    suspend fun getAllMessages(): List<MessageEntity>
-
-    @Query("SELECT * FROM messages ORDER BY timestamp DESC LIMIT :limit")
-    suspend fun getRecentMessages(limit: Int): List<MessageEntity>
-
-    @Query("DELETE FROM messages")
-    suspend fun deleteAll()
-
-    @Query("SELECT COUNT(*) FROM messages")
-    suspend fun getMessageCount(): Int
+    @Query("""
+        SELECT * FROM messages
+        WHERE conversationId = :conversationId
+        ORDER BY timestamp ASC, id ASC
+    """)
+    suspend fun getAllMessages(conversationId: Long): List<MessageEntity>
 
     @Query("""
         SELECT * FROM messages
-        ORDER BY timestamp ASC
+        WHERE conversationId = :conversationId
+        ORDER BY timestamp DESC, id DESC
         LIMIT :limit
     """)
-    suspend fun getOldMessages(limit: Int): List<MessageEntity>
+    suspend fun getRecentMessages(
+        conversationId: Long,
+        limit: Int
+    ): List<MessageEntity>
 
     @Query("""
         DELETE FROM messages
-        WHERE id IN (
+        WHERE conversationId = :conversationId
+    """)
+    suspend fun deleteForConversation(conversationId: Long)
+
+    @Query("""
+        SELECT COUNT(*) FROM messages
+        WHERE conversationId = :conversationId
+    """)
+    suspend fun getMessageCount(conversationId: Long): Int
+
+    @Query("""
+        SELECT * FROM messages
+        WHERE conversationId = :conversationId
+        ORDER BY timestamp ASC, id ASC
+        LIMIT :limit
+    """)
+    suspend fun getOldMessages(
+        conversationId: Long,
+        limit: Int
+    ): List<MessageEntity>
+
+    @Query("""
+        DELETE FROM messages
+        WHERE conversationId = :conversationId
+        AND id IN (
             SELECT id
             FROM messages
-            ORDER BY timestamp ASC
+            WHERE conversationId = :conversationId
+            ORDER BY timestamp ASC, id ASC
             LIMIT :limit
         )
     """)
-    suspend fun deleteOldMessages(limit: Int)
+    suspend fun deleteOldMessages(
+        conversationId: Long,
+        limit: Int
+    )
 }

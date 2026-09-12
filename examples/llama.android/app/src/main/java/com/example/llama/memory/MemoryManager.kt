@@ -6,58 +6,117 @@ import androidx.sqlite.driver.AndroidSQLiteDriver
 
 class MemoryManager(context: Context) {
 
-    private val database = Room.databaseBuilder<AppDatabase>(context.applicationContext, "ai_memory.db")
-        .setDriver(AndroidSQLiteDriver())
-        .build()
+    private val database = Room.databaseBuilder<AppDatabase>(
+        context.applicationContext, "ai_memory.db"
+    ).setDriver(AndroidSQLiteDriver()).addMigrations(AppDatabase.MIGRATION_2_3).build()
+
     private val memoryDao = database.memoryDao()
+    private val conversationDao = database.conversationDao()
     private val messageDao = database.messageDao()
     private val conversationSummaryDao = database.conversationSummaryDao()
 
-    suspend fun getMessageCount(): Int {
-        return messageDao.getMessageCount()
+    // =============================================================
+    // CONVERSATIONS
+    // =============================================================
+
+    suspend fun createConversation(
+        title: String = "New Chat"
+    ): ConversationEntity {
+
+        val now = System.currentTimeMillis()
+
+        val id = conversationDao.insert(
+            ConversationEntity(
+                title = title, createdAt = now, updatedAt = now
+            )
+        )
+
+        return ConversationEntity(
+            id = id, title = title, createdAt = now, updatedAt = now
+        )
     }
 
-    suspend fun getOldMessages(limit: Int): List<MessageEntity> {
-        return messageDao.getOldMessages(limit)
+    suspend fun getOrCreateCurrentConversation(): ConversationEntity {
+        return conversationDao.getMostRecent() ?: createConversation()
     }
 
-    suspend fun deleteOldMessages(limit: Int) {
-        messageDao.deleteOldMessages(limit)
+    suspend fun getConversation(
+        conversationId: Long
+    ): ConversationEntity? {
+        return conversationDao.getById(conversationId)
     }
 
-    // -------------------------
-    // Conversation Summary
-    // -------------------------
-
-    suspend fun saveConversationSummary(summary: String) {
-        conversationSummaryDao.save(ConversationSummaryEntity(id = 1, summary = summary, updatedAt = System.currentTimeMillis()))
+    suspend fun getAllConversations(): List<ConversationEntity> {
+        return conversationDao.getAll()
     }
 
-    suspend fun getConversationSummary(): String? {
-        return conversationSummaryDao.getSummary()?.summary
+    suspend fun deleteConversation(
+        conversationId: Long
+    ) {
+        messageDao.deleteForConversation(conversationId)
+        conversationSummaryDao.deleteSummary(conversationId)
+        conversationDao.deleteById(conversationId)
     }
 
-    suspend fun clearConversationSummary() {
-        conversationSummaryDao.deleteSummary()
+    // =============================================================
+    // CONVERSATION SUMMARY
+    // =============================================================
+
+    suspend fun saveConversationSummary(
+        conversationId: Long, summary: String
+    ) {
+        conversationSummaryDao.save(
+            ConversationSummaryEntity(
+                conversationId = conversationId,
+                summary = summary,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
-    // -------------------------
-    // Persistent Memory
-    // -------------------------
+    suspend fun getConversationSummary(
+        conversationId: Long
+    ): String? {
+        return conversationSummaryDao.getSummary(conversationId)?.summary
+    }
 
-    suspend fun saveMemory(key: String, value: String, importance: Int = 1) {
+    suspend fun clearConversationSummary(
+        conversationId: Long
+    ) {
+        conversationSummaryDao.deleteSummary(conversationId)
+    }
+
+    // =============================================================
+    // PERSISTENT MEMORY
+    // =============================================================
+
+    suspend fun saveMemory(
+        key: String, value: String, importance: Int = 1
+    ) {
 
         val existing = memoryDao.getMemory(key)
 
         if (existing != null) {
-            memoryDao.update(existing.copy(value = value, importance = importance, updatedAt = System.currentTimeMillis()))
+
+            memoryDao.update(
+                existing.copy(
+                    value = value, importance = importance, updatedAt = System.currentTimeMillis()
+                )
+            )
+
         } else {
-            memoryDao.insert(MemoryEntity(key = key, value = value, importance = importance))
+
+            memoryDao.insert(
+                MemoryEntity(
+                    key = key, value = value, importance = importance
+                )
+            )
         }
     }
 
-
-    suspend fun getMemory(key: String): MemoryEntity? {
+    suspend fun getMemory(
+        key: String
+    ): MemoryEntity? {
         return memoryDao.getMemory(key)
     }
 
@@ -65,28 +124,114 @@ class MemoryManager(context: Context) {
         return memoryDao.getAllMemories()
     }
 
-    suspend fun searchMemories(query: String): List<MemoryEntity> {
+    suspend fun searchMemories(
+        query: String
+    ): List<MemoryEntity> {
         return memoryDao.searchMemories(query)
     }
 
-    // -------------------------
-    // Conversation Messages
-    // -------------------------
+    // =============================================================
+    // CONVERSATION MESSAGES
+    // =============================================================
 
-    suspend fun saveMessage(role: String, content: String) {
-        messageDao.insert(MessageEntity(role = role, content = content))
-    }
-    suspend fun getAllMessages(): List<MessageEntity> {
-        return messageDao.getAllMessages()
+    suspend fun saveMessage(
+        conversationId: Long, role: String, content: String
+    ) {
+
+        messageDao.insert(
+            MessageEntity(
+                conversationId = conversationId, role = role, content = content
+            )
+        )
+
+        val now = System.currentTimeMillis()
+
+        if (role == "user") {
+
+            val conversation = conversationDao.getById(conversationId)
+
+            if (conversation != null && conversation.title == "New Chat") {
+
+                conversationDao.updateTitle(
+                    conversationId, createConversationTitle(content), now
+                )
+
+                return
+            }
+        }
+
+        conversationDao.touch(
+            conversationId, now
+        )
     }
 
-    suspend fun getRecentMessages(limit: Int): List<MessageEntity> {
-        return messageDao.getRecentMessages(limit).reversed()
+    suspend fun getAllMessages(
+        conversationId: Long
+    ): List<MessageEntity> {
+        return messageDao.getAllMessages(conversationId)
     }
 
-    suspend fun clearMessages() {
-        messageDao.deleteAll()
+    suspend fun getRecentMessages(
+        conversationId: Long, limit: Int
+    ): List<MessageEntity> {
+        return messageDao.getRecentMessages(conversationId, limit).reversed()
     }
+
+    suspend fun getMessageCount(
+        conversationId: Long
+    ): Int {
+        return messageDao.getMessageCount(conversationId)
+    }
+
+    suspend fun getOldMessages(
+        conversationId: Long, limit: Int
+    ): List<MessageEntity> {
+        return messageDao.getOldMessages(
+            conversationId, limit
+        )
+    }
+
+    suspend fun deleteOldMessages(
+        conversationId: Long, limit: Int
+    ) {
+        messageDao.deleteOldMessages(
+            conversationId, limit
+        )
+    }
+
+    suspend fun clearMessages(
+        conversationId: Long
+    ) {
+        messageDao.deleteForConversation(conversationId)
+        conversationDao.touch(
+            conversationId, System.currentTimeMillis()
+        )
+    }
+
+    // =============================================================
+    // TITLE
+    // =============================================================
+
+    private fun createConversationTitle(
+        message: String
+    ): String {
+
+        val cleaned = message.replace(Regex("""\s+"""), " ").trim()
+
+        if (cleaned.isEmpty()) {
+            return "New Chat"
+        }
+
+        return if (cleaned.length <= 42) {
+            cleaned
+        } else {
+            cleaned.take(42).trimEnd() + "..."
+        }
+    }
+
+    // =============================================================
+    // GLOBAL MEMORY
+    // =============================================================
 
     suspend fun clearMemory() {
         memoryDao.deleteAll()
@@ -98,9 +243,11 @@ class MemoryManager(context: Context) {
 
     suspend fun printAllMemories() {
         val memories = memoryDao.getAllMemories()
-        memories.forEach { println("MEMORY DEBUG -> id=${it.id}, key=${it.key}, value=${it.value}")
+
+        memories.forEach {
+            println(
+                "MEMORY DEBUG -> id=${it.id}, " + "key=${it.key}, " + "value=${it.value}"
+            )
         }
     }
-
-
 }

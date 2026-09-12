@@ -27,6 +27,15 @@ interface InferenceEngine {
     suspend fun setSystemPrompt(systemPrompt: String)
 
     /**
+     * Resets the current native LLM conversation context.
+     *
+     * This clears the current conversation/KV cache while keeping
+     * the loaded model in memory. After this call, a new system
+     * prompt can be processed.
+     */
+    suspend fun resetConversation()
+
+    /**
      * Sends a user prompt to the loaded model and returns
      * a Flow of generated tokens.
      */
