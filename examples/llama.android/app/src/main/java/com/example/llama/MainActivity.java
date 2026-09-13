@@ -1,5 +1,7 @@
 package com.example.llama;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
@@ -12,15 +14,20 @@ import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.example.llama.ai.voice.AndroidSpeechToTextEngine;
+import com.example.llama.ai.voice.SpeechToTextEngine;
 import com.example.llama.memory.ConversationEntity;
 import com.example.llama.memory.MessageEntity;
 
@@ -29,6 +36,13 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.Calendar;
 import java.util.List;
+
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.AnimatorSet;
+import android.animation.ObjectAnimator;
+import android.view.animation.AccelerateDecelerateInterpolator;
+import android.widget.ImageView;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -41,6 +55,21 @@ public class MainActivity extends AppCompatActivity {
 
     private EditText userInput;
     private ImageButton sendButton;
+
+    private ImageButton microphoneButton;
+    private SpeechToTextEngine speechToTextEngine;
+
+    private View voiceListeningContainer;
+    private ImageView voiceListeningIcon;
+    private TextView voiceListeningText;
+    private TextView voiceListeningSubtext;
+
+    private AnimatorSet voicePulseAnimator;
+
+    private boolean isListening = false;
+
+    private static final int RECORD_AUDIO_REQUEST_CODE = 1001;
+
     private Button loadModelButton;
 
     private RecyclerView messagesRecyclerView;
@@ -73,7 +102,6 @@ public class MainActivity extends AppCompatActivity {
     private boolean isGenerating = false;
 
     private long currentConversationId = -1L;
-
     private long selectedConversationId = -1L;
 
     // =============================================================
@@ -87,16 +115,12 @@ public class MainActivity extends AppCompatActivity {
     // MODEL PICKER
     // =============================================================
 
-    private final ActivityResultLauncher<String[]> modelPicker =
-        registerForActivityResult(
-            new ActivityResultContracts.OpenDocument(),
-            uri -> {
+    private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
 
-                if (uri != null) {
-                    importAndLoadModel(uri);
-                }
-            }
-        );
+        if (uri != null) {
+            importAndLoadModel(uri);
+        }
+    });
 
     // =============================================================
     // ON CREATE
@@ -109,9 +133,7 @@ public class MainActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_main);
 
-        getWindow().setSoftInputMode(
-            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-        );
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
         bindViews();
 
@@ -125,42 +147,169 @@ public class MainActivity extends AppCompatActivity {
 
         llmManager = new LlmManager(this);
 
-        /*
-         * Restore most recently used conversation.
-         */
-        llmManager.initializeConversation(
-            new LlmManager.ConversationCallback() {
+        // =========================================================
+        // SPEECH TO TEXT
+        // =========================================================
 
-                @Override
-                public void onSuccess(
-                    ConversationEntity conversation
-                ) {
+        speechToTextEngine = new AndroidSpeechToTextEngine(this, new AndroidSpeechToTextEngine.Listener() {
 
-                    currentConversationId =
-                        conversation.getId();
+            @Override
+            public void onReady() {
 
-                    selectedConversationId =
-                        conversation.getId();
+                runOnUiThread(() -> {
 
-                    loadConversationMessages(
-                        currentConversationId
+                    isListening = true;
+
+                    microphoneButton.setContentDescription(
+                        "Stop listening"
                     );
 
-                    refreshHistory();
-                }
+                    modelStatusText.setText("Listening...");
 
-                @Override
-                public void onError(
-                    Exception error
-                ) {
+                    showListeningUI();
+                });
+            }
+            @Override
+            public void onBeginningOfSpeech() {
+
+                runOnUiThread(() -> {
+
+                    isListening = true;
+
+                    microphoneButton.setContentDescription(
+                        "Stop listening"
+                    );
+
+                    voiceListeningText.setText("Listening...");
+                    voiceListeningSubtext.setText("I'm listening");
+
+                    modelStatusText.setText("Listening...");
+                });
+            }
+
+            @Override
+            public void onPartialResult(String text) {
+
+                runOnUiThread(() -> {
+
+                    if (text != null && !text.trim().isEmpty()) {
+
+                        userInput.setText(text);
+
+                        userInput.setSelection(
+                            userInput.length()
+                        );
+
+                        voiceListeningSubtext.setText(
+                            "Keep speaking..."
+                        );
+                    }
+                });
+            }
+
+            @Override
+            public void onFinalResult(String text) {
+
+                runOnUiThread(() -> {
+
+                    isListening = false;
+
+                    hideListeningUI();
+
+                    microphoneButton.setContentDescription(
+                        "Voice input"
+                    );
+
+                    if (text != null && !text.trim().isEmpty()) {
+
+                        userInput.setText(text);
+
+                        userInput.setSelection(
+                            userInput.length()
+                        );
+
+                        modelStatusText.setText(
+                            "Ready to send"
+                        );
+
+                    } else {
+
+                        modelStatusText.setText(
+                            modelReady
+                                ? "Model ready"
+                                : "No model loaded"
+                        );
+                    }
+                });
+            }
+
+            @Override
+            public void onEndOfSpeech() {
+
+                runOnUiThread(() -> {
+
+                    voiceListeningText.setText(
+                        "Processing..."
+                    );
+
+                    voiceListeningSubtext.setText(
+                        "Converting speech to text"
+                    );
 
                     modelStatusText.setText(
-                        "Database error: " +
-                            error.getMessage()
+                        "Converting speech..."
                     );
-                }
+                });
             }
-        );
+
+            @Override
+            public void onError(String error) {
+
+                runOnUiThread(() -> {
+
+                    isListening = false;
+
+                    hideListeningUI();
+
+                    microphoneButton.setContentDescription(
+                        "Voice input"
+                    );
+
+                    modelStatusText.setText(error);
+
+                    Toast.makeText(
+                        MainActivity.this,
+                        error,
+                        Toast.LENGTH_SHORT
+                    ).show();
+                });
+            }
+        });
+
+        // =========================================================
+        // RESTORE CURRENT CONVERSATION
+        // =========================================================
+
+        llmManager.initializeConversation(new LlmManager.ConversationCallback() {
+
+            @Override
+            public void onSuccess(ConversationEntity conversation) {
+
+                currentConversationId = conversation.getId();
+
+                selectedConversationId = conversation.getId();
+
+                loadConversationMessages(currentConversationId);
+
+                refreshHistory();
+            }
+
+            @Override
+            public void onError(Exception error) {
+
+                modelStatusText.setText("Database error: " + error.getMessage());
+            }
+        });
     }
 
     // =============================================================
@@ -169,47 +318,47 @@ public class MainActivity extends AppCompatActivity {
 
     private void bindViews() {
 
-        modelNameText =
-            findViewById(R.id.modelNameText);
+        modelNameText = findViewById(R.id.modelNameText);
 
-        modelStatusText =
-            findViewById(R.id.modelStatusText);
+        modelStatusText = findViewById(R.id.modelStatusText);
 
-        userInput =
-            findViewById(R.id.user_input);
+        userInput = findViewById(R.id.user_input);
 
-        sendButton =
-            findViewById(R.id.sendButton);
+        sendButton = findViewById(R.id.sendButton);
 
-        loadModelButton =
-            findViewById(R.id.loadModelButton);
+        microphoneButton = findViewById(R.id.microphoneButton);
 
-        messagesRecyclerView =
-            findViewById(R.id.messages);
+        loadModelButton = findViewById(R.id.loadModelButton);
 
-        emptyState =
-            findViewById(R.id.emptyState);
+        messagesRecyclerView = findViewById(R.id.messages);
 
-        drawerLayout =
-            findViewById(R.id.drawerLayout);
+        emptyState = findViewById(R.id.emptyState);
 
-        drawerNewChat =
-            findViewById(R.id.drawerNewChat);
+        drawerLayout = findViewById(R.id.drawerLayout);
 
-        drawerModels =
-            findViewById(R.id.drawerModels);
+        drawerNewChat = findViewById(R.id.drawerNewChat);
 
-        drawerImages =
-            findViewById(R.id.drawerImages);
+        drawerModels = findViewById(R.id.drawerModels);
 
-        drawerSettings =
-            findViewById(R.id.drawerSettings);
+        drawerImages = findViewById(R.id.drawerImages);
 
-        drawerProfile =
-            findViewById(R.id.drawerProfile);
+        drawerSettings = findViewById(R.id.drawerSettings);
 
-        historyContainer =
-            findViewById(R.id.historyContainer);
+        drawerProfile = findViewById(R.id.drawerProfile);
+
+        historyContainer = findViewById(R.id.historyContainer);
+
+        voiceListeningContainer =
+            findViewById(R.id.voiceListeningContainer);
+
+        voiceListeningIcon =
+            findViewById(R.id.voiceListeningIcon);
+
+        voiceListeningText =
+            findViewById(R.id.voiceListeningText);
+
+        voiceListeningSubtext =
+            findViewById(R.id.voiceListeningSubtext);
     }
 
     // =============================================================
@@ -222,15 +371,13 @@ public class MainActivity extends AppCompatActivity {
 
         isGenerating = false;
 
+        isListening = false;
+
         modelNameText.setText("No model");
 
-        modelStatusText.setText(
-            "No model loaded"
-        );
+        modelStatusText.setText("No model loaded");
 
-        loadModelButton.setText(
-            "Load Model"
-        );
+        loadModelButton.setText("Load Model");
 
         loadModelButton.setEnabled(true);
 
@@ -238,17 +385,15 @@ public class MainActivity extends AppCompatActivity {
 
         userInput.setEnabled(false);
 
-        userInput.setHint(
-            "Load a model to start chatting..."
-        );
+        userInput.setHint("Load a model to start chatting...");
 
-        emptyState.setVisibility(
-            View.VISIBLE
-        );
+        emptyState.setVisibility(View.VISIBLE);
 
-        messagesRecyclerView.setVisibility(
-            View.GONE
-        );
+        messagesRecyclerView.setVisibility(View.GONE);
+
+        microphoneButton.setEnabled(false);
+
+        microphoneButton.setContentDescription("Voice input");
     }
 
     // =============================================================
@@ -257,77 +402,52 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupRecyclerView() {
 
-        layoutManager =
-            new LinearLayoutManager(this);
+        layoutManager = new LinearLayoutManager(this);
 
         layoutManager.setStackFromEnd(false);
 
-        messagesRecyclerView.setLayoutManager(
-            layoutManager
-        );
+        messagesRecyclerView.setLayoutManager(layoutManager);
 
         messagesRecyclerView.setHasFixedSize(false);
 
         messagesRecyclerView.setItemAnimator(null);
 
-        messageAdapter =
-            new MessageAdapter();
+        messageAdapter = new MessageAdapter();
 
-        messagesRecyclerView.setAdapter(
-            messageAdapter
-        );
+        messagesRecyclerView.setAdapter(messageAdapter);
 
-        messagesRecyclerView.addOnScrollListener(
-            new RecyclerView.OnScrollListener() {
+        messagesRecyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
 
-                @Override
-                public void onScrollStateChanged(
-                    @NonNull RecyclerView recyclerView,
-                    int newState
-                ) {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
 
-                    if (
-                        newState ==
-                            RecyclerView.SCROLL_STATE_DRAGGING
-                    ) {
+                if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
 
-                        userIsDragging = true;
+                    userIsDragging = true;
 
-                        autoScroll = false;
+                    autoScroll = false;
 
-                    } else if (
-                        newState ==
-                            RecyclerView.SCROLL_STATE_IDLE
-                    ) {
+                } else if (newState == RecyclerView.SCROLL_STATE_IDLE) {
 
-                        userIsDragging = false;
+                    userIsDragging = false;
 
-                        autoScroll =
-                            isAtBottom();
-                    }
-                }
-
-                @Override
-                public void onScrolled(
-                    @NonNull RecyclerView recyclerView,
-                    int dx,
-                    int dy
-                ) {
-
-                    if (userIsDragging) {
-                        return;
-                    }
-
-                    if (
-                        !recyclerView
-                            .canScrollVertically(1)
-                    ) {
-
-                        autoScroll = true;
-                    }
+                    autoScroll = isAtBottom();
                 }
             }
-        );
+
+            @Override
+            public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
+
+                if (userIsDragging) {
+                    return;
+                }
+
+                if (!recyclerView.canScrollVertically(1)) {
+
+                    autoScroll = true;
+                }
+            }
+        });
     }
 
     // =============================================================
@@ -336,42 +456,69 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupButtons() {
 
-        ImageButton menuButton =
-            findViewById(R.id.menuButton);
+        // ---------------------------------------------------------
+        // MICROPHONE
+        // ---------------------------------------------------------
 
-        menuButton.setOnClickListener(
-            v -> drawerLayout.openDrawer(
-                Gravity.START
-            )
-        );
+        microphoneButton.setOnClickListener(v -> {
 
-        loadModelButton.setOnClickListener(
-            v -> {
-
-                if (
-                    !modelReady &&
-                        !isGenerating
-                ) {
-
-                    openModelPicker();
-                }
+            if (!modelReady) {
+                return;
             }
-        );
 
-        sendButton.setOnClickListener(
-            v -> {
-
-                if (!modelReady) {
-                    return;
-                }
-
-                if (isGenerating) {
-                    stopGeneration();
-                } else {
-                    sendMessage();
-                }
+            if (isGenerating) {
+                return;
             }
-        );
+
+            if (isListening) {
+
+                stopVoiceInput();
+
+            } else {
+
+                startVoiceInput();
+            }
+        });
+
+        // ---------------------------------------------------------
+        // MENU
+        // ---------------------------------------------------------
+
+        ImageButton menuButton = findViewById(R.id.menuButton);
+
+        menuButton.setOnClickListener(v -> drawerLayout.openDrawer(Gravity.START));
+
+        // ---------------------------------------------------------
+        // LOAD MODEL
+        // ---------------------------------------------------------
+
+        loadModelButton.setOnClickListener(v -> {
+
+            if (!modelReady && !isGenerating) {
+
+                openModelPicker();
+            }
+        });
+
+        // ---------------------------------------------------------
+        // SEND
+        // ---------------------------------------------------------
+
+        sendButton.setOnClickListener(v -> {
+
+            if (!modelReady) {
+                return;
+            }
+
+            if (isGenerating) {
+
+                stopGeneration();
+
+            } else {
+
+                sendMessage();
+            }
+        });
     }
 
     // =============================================================
@@ -380,71 +527,40 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupDrawer() {
 
-        drawerNewChat.setOnClickListener(
-            v -> {
+        drawerNewChat.setOnClickListener(v -> {
 
-                drawerLayout.closeDrawer(
-                    Gravity.START
-                );
+            drawerLayout.closeDrawer(Gravity.START);
 
-                startNewChat();
-            }
-        );
+            startNewChat();
+        });
 
-        drawerModels.setOnClickListener(
-            v -> {
+        drawerModels.setOnClickListener(v -> {
 
-                drawerLayout.closeDrawer(
-                    Gravity.START
-                );
+            drawerLayout.closeDrawer(Gravity.START);
 
-                modelStatusText.setText(
-                    modelReady
-                        ? "Model: " +
-                        modelNameText.getText()
-                        : "No model loaded"
-                );
-            }
-        );
+            modelStatusText.setText(modelReady ? "Model: " + modelNameText.getText() : "No model loaded");
+        });
 
-        drawerImages.setOnClickListener(
-            v -> {
+        drawerImages.setOnClickListener(v -> {
 
-                drawerLayout.closeDrawer(
-                    Gravity.START
-                );
+            drawerLayout.closeDrawer(Gravity.START);
 
-                modelStatusText.setText(
-                    "Images are not implemented yet"
-                );
-            }
-        );
+            modelStatusText.setText("Images are not implemented yet");
+        });
 
-        drawerSettings.setOnClickListener(
-            v -> {
+        drawerSettings.setOnClickListener(v -> {
 
-                drawerLayout.closeDrawer(
-                    Gravity.START
-                );
+            drawerLayout.closeDrawer(Gravity.START);
 
-                modelStatusText.setText(
-                    "Settings are not implemented yet"
-                );
-            }
-        );
+            modelStatusText.setText("Settings are not implemented yet");
+        });
 
-        drawerProfile.setOnClickListener(
-            v -> {
+        drawerProfile.setOnClickListener(v -> {
 
-                drawerLayout.closeDrawer(
-                    Gravity.START
-                );
+            drawerLayout.closeDrawer(Gravity.START);
 
-                modelStatusText.setText(
-                    "Local profile"
-                );
-            }
-        );
+            modelStatusText.setText("Local profile");
+        });
     }
 
     // =============================================================
@@ -453,53 +569,34 @@ public class MainActivity extends AppCompatActivity {
 
     private void refreshHistory() {
 
-        if (
-            llmManager == null ||
-                historyContainer == null
-        ) {
+        if (llmManager == null || historyContainer == null) {
+
             return;
         }
 
-        llmManager.getConversations(
-            new LlmManager.ConversationsCallback() {
+        llmManager.getConversations(new LlmManager.ConversationsCallback() {
 
-                @Override
-                public void onSuccess(
-                    List<ConversationEntity> conversations
-                ) {
+            @Override
+            public void onSuccess(List<ConversationEntity> conversations) {
 
-                    renderHistory(
-                        conversations
-                    );
-                }
-
-                @Override
-                public void onError(
-                    Exception error
-                ) {
-
-                    error.printStackTrace();
-                }
+                renderHistory(conversations);
             }
-        );
+
+            @Override
+            public void onError(Exception error) {
+
+                error.printStackTrace();
+            }
+        });
     }
 
-    private void renderHistory(
-        List<ConversationEntity> conversations
-    ) {
+    private void renderHistory(List<ConversationEntity> conversations) {
 
         historyContainer.removeAllViews();
 
-        if (
-            conversations == null ||
-                conversations.isEmpty()
-        ) {
+        if (conversations == null || conversations.isEmpty()) {
 
-            TextView empty =
-                createHistoryText(
-                    "No conversations yet",
-                    false
-                );
+            TextView empty = createHistoryText("No conversations yet", false);
 
             historyContainer.addView(empty);
 
@@ -507,26 +604,18 @@ public class MainActivity extends AppCompatActivity {
         }
 
         boolean todayAdded = false;
-
         boolean yesterdayAdded = false;
-
         boolean earlierAdded = false;
 
-        for (
-            ConversationEntity conversation :
-            conversations
-        ) {
+        for (ConversationEntity conversation : conversations) {
 
-            long timestamp =
-                conversation.getUpdatedAt();
+            long timestamp = conversation.getUpdatedAt();
 
             if (isToday(timestamp)) {
 
                 if (!todayAdded) {
 
-                    addHistorySectionTitle(
-                        "Today"
-                    );
+                    addHistorySectionTitle("Today");
 
                     todayAdded = true;
                 }
@@ -535,9 +624,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (!yesterdayAdded) {
 
-                    addHistorySectionTitle(
-                        "Yesterday"
-                    );
+                    addHistorySectionTitle("Yesterday");
 
                     yesterdayAdded = true;
                 }
@@ -546,9 +633,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (!earlierAdded) {
 
-                    addHistorySectionTitle(
-                        "Earlier"
-                    );
+                    addHistorySectionTitle("Earlier");
 
                     earlierAdded = true;
                 }
@@ -558,175 +643,90 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void addHistorySectionTitle(
-        String title
-    ) {
+    private void addHistorySectionTitle(String title) {
 
-        TextView text =
-            createHistoryText(
-                title,
-                true
-            );
+        TextView text = createHistoryText(title, true);
 
-        LinearLayout.LayoutParams params =
-            new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            );
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
 
-        params.topMargin =
-            title.equals("Today")
-                ? dp(4)
-                : dp(14);
+        params.topMargin = title.equals("Today") ? dp(4) : dp(14);
 
         text.setLayoutParams(params);
 
         historyContainer.addView(text);
     }
 
-    private void addHistoryItem(
-        ConversationEntity conversation
-    ) {
+    private void addHistoryItem(ConversationEntity conversation) {
 
-        TextView item =
-            createHistoryText(
-                conversation.getTitle(),
-                false
-            );
+        TextView item = createHistoryText(conversation.getTitle(), false);
 
-        item.setTag(
-            conversation.getId()
-        );
+        item.setTag(conversation.getId());
 
-        updateHistoryItemAppearance(
-            item,
-            conversation.getId()
-        );
+        updateHistoryItemAppearance(item, conversation.getId());
 
-        item.setOnClickListener(
-            v -> {
+        item.setOnClickListener(v -> {
 
-                long conversationId =
-                    (Long) v.getTag();
+            long conversationId = (Long) v.getTag();
 
-                if (isGenerating) {
+            if (isGenerating) {
 
-                    modelStatusText.setText(
-                        "Stop generation before switching chats"
-                    );
+                modelStatusText.setText("Stop generation before switching chats");
 
-                    return;
-                }
-
-                selectedConversationId =
-                    conversationId;
-
-                updateHistorySelection();
-
-                modelStatusText.setText(
-                    "Opening chat..."
-                );
-
-                selectConversation(
-                    conversationId
-                );
+                return;
             }
-        );
 
-        item.setContentDescription(
-            "Open conversation " +
-                conversation.getTitle()
-        );
+            selectedConversationId = conversationId;
+
+            updateHistorySelection();
+
+            modelStatusText.setText("Opening chat...");
+
+            selectConversation(conversationId);
+        });
+
+        item.setContentDescription("Open conversation " + conversation.getTitle());
 
         historyContainer.addView(item);
     }
 
     private void updateHistorySelection() {
 
-        for (
-            int i = 0;
-            i < historyContainer.getChildCount();
-            i++
-        ) {
+        for (int i = 0; i < historyContainer.getChildCount(); i++) {
 
-            View child =
-                historyContainer.getChildAt(i);
+            View child = historyContainer.getChildAt(i);
 
-            if (
-                child instanceof TextView &&
-                    child.getTag() instanceof Long
-            ) {
+            if (child instanceof TextView && child.getTag() instanceof Long) {
 
-                long id =
-                    (Long) child.getTag();
+                long id = (Long) child.getTag();
 
-                updateHistoryItemAppearance(
-                    (TextView) child,
-                    id
-                );
+                updateHistoryItemAppearance((TextView) child, id);
             }
         }
     }
 
-    private void updateHistoryItemAppearance(
-        TextView item,
-        long conversationId
-    ) {
+    private void updateHistoryItemAppearance(TextView item, long conversationId) {
 
-        if (
-            conversationId ==
-                selectedConversationId
-        ) {
+        if (conversationId == selectedConversationId) {
 
-            item.setTextColor(
-                android.graphics.Color.rgb(
-                    20,
-                    20,
-                    20
-                )
-            );
+            item.setTextColor(android.graphics.Color.rgb(20, 20, 20));
 
-            item.setTypeface(
-                null,
-                android.graphics.Typeface.BOLD
-            );
+            item.setTypeface(null, android.graphics.Typeface.BOLD);
 
-            item.setBackgroundColor(
-                android.graphics.Color.rgb(
-                    238,
-                    238,
-                    238
-                )
-            );
+            item.setBackgroundColor(android.graphics.Color.rgb(238, 238, 238));
 
         } else {
 
-            item.setTextColor(
-                android.graphics.Color.rgb(
-                    51,
-                    51,
-                    51
-                )
-            );
+            item.setTextColor(android.graphics.Color.rgb(51, 51, 51));
 
-            item.setTypeface(
-                null,
-                android.graphics.Typeface.NORMAL
-            );
+            item.setTypeface(null, android.graphics.Typeface.NORMAL);
 
-            item.setBackgroundResource(
-                R.drawable.bg_drawer_item
-            );
+            item.setBackgroundResource(R.drawable.bg_drawer_item);
         }
     }
 
-    private TextView createHistoryText(
-        String text,
-        boolean sectionTitle
-    ) {
+    private TextView createHistoryText(String text, boolean sectionTitle) {
 
-        TextView view =
-            new TextView(this);
+        TextView view = new TextView(this);
 
         if (sectionTitle) {
 
@@ -734,20 +734,9 @@ public class MainActivity extends AppCompatActivity {
 
             view.setTextSize(12);
 
-            view.setTextColor(
-                android.graphics.Color.rgb(
-                    145,
-                    145,
-                    145
-                )
-            );
+            view.setTextColor(android.graphics.Color.rgb(145, 145, 145));
 
-            view.setPadding(
-                dp(12),
-                dp(8),
-                dp(12),
-                dp(6)
-            );
+            view.setPadding(dp(12), dp(8), dp(12), dp(6));
 
         } else {
 
@@ -755,38 +744,19 @@ public class MainActivity extends AppCompatActivity {
 
             view.setTextSize(14);
 
-            view.setTextColor(
-                android.graphics.Color.rgb(
-                    51,
-                    51,
-                    51
-                )
-            );
+            view.setTextColor(android.graphics.Color.rgb(51, 51, 51));
 
-            view.setGravity(
-                Gravity.CENTER_VERTICAL
-            );
+            view.setGravity(Gravity.CENTER_VERTICAL);
 
             view.setSingleLine(true);
 
-            view.setEllipsize(
-                android.text.TextUtils.TruncateAt.END
-            );
+            view.setEllipsize(android.text.TextUtils.TruncateAt.END);
 
-            view.setPadding(
-                dp(12),
-                0,
-                dp(12),
-                0
-            );
+            view.setPadding(dp(12), 0, dp(12), 0);
 
-            view.setMinHeight(
-                dp(44)
-            );
+            view.setMinHeight(dp(44));
 
-            view.setBackgroundResource(
-                R.drawable.bg_drawer_item
-            );
+            view.setBackgroundResource(R.drawable.bg_drawer_item);
 
             view.setClickable(true);
 
@@ -800,152 +770,90 @@ public class MainActivity extends AppCompatActivity {
     // SELECT CONVERSATION
     // =============================================================
 
-    private void selectConversation(
-        long conversationId
-    ) {
+    private void selectConversation(long conversationId) {
 
         if (isGenerating) {
             return;
         }
 
-        modelStatusText.setText(
-            modelReady
-                ? "Loading conversation..."
-                : "Conversation loaded"
-        );
+        modelStatusText.setText(modelReady ? "Loading conversation..." : "Conversation loaded");
 
-        llmManager.selectConversation(
-            conversationId,
-            new LlmManager.ConversationCallback() {
+        llmManager.selectConversation(conversationId, new LlmManager.ConversationCallback() {
 
-                @Override
-                public void onSuccess(
-                    ConversationEntity conversation
-                ) {
+            @Override
+            public void onSuccess(ConversationEntity conversation) {
 
-                    currentConversationId =
-                        conversation.getId();
+                currentConversationId = conversation.getId();
 
-                    selectedConversationId =
-                        conversation.getId();
+                selectedConversationId = conversation.getId();
 
-                    loadConversationMessages(
-                        currentConversationId
-                    );
+                loadConversationMessages(currentConversationId);
 
-                    updateHistorySelection();
+                updateHistorySelection();
 
-                    drawerLayout.closeDrawer(
-                        Gravity.START
-                    );
+                drawerLayout.closeDrawer(Gravity.START);
 
-                    modelStatusText.setText(
-                        modelReady
-                            ? "Model ready"
-                            : "Conversation selected"
-                    );
-                }
-
-                @Override
-                public void onError(
-                    Exception error
-                ) {
-
-                    modelStatusText.setText(
-                        "Could not open chat: " +
-                            error.getMessage()
-                    );
-
-                    selectedConversationId =
-                        currentConversationId;
-
-                    updateHistorySelection();
-                }
+                modelStatusText.setText(modelReady ? "Model ready" : "Conversation selected");
             }
-        );
+
+            @Override
+            public void onError(Exception error) {
+
+                modelStatusText.setText("Could not open chat: " + error.getMessage());
+
+                selectedConversationId = currentConversationId;
+
+                updateHistorySelection();
+            }
+        });
     }
 
     // =============================================================
     // LOAD CONVERSATION MESSAGES
     // =============================================================
 
-    private void loadConversationMessages(
-        long conversationId
-    ) {
+    private void loadConversationMessages(long conversationId) {
 
-        llmManager.getConversationMessages(
-            conversationId,
-            new LlmManager.MessagesCallback() {
+        llmManager.getConversationMessages(conversationId, new LlmManager.MessagesCallback() {
 
-                @Override
-                public void onSuccess(
-                    List<MessageEntity> messages
-                ) {
+            @Override
+            public void onSuccess(List<MessageEntity> messages) {
 
-                    messageAdapter.clearMessages();
+                messageAdapter.clearMessages();
 
-                    if (
-                        messages == null ||
-                            messages.isEmpty()
-                    ) {
+                if (messages == null || messages.isEmpty()) {
 
-                        emptyState.setVisibility(
-                            View.VISIBLE
-                        );
+                    emptyState.setVisibility(View.VISIBLE);
 
-                        messagesRecyclerView.setVisibility(
-                            View.GONE
-                        );
+                    messagesRecyclerView.setVisibility(View.GONE);
 
-                    } else {
+                } else {
 
-                        emptyState.setVisibility(
-                            View.GONE
-                        );
+                    emptyState.setVisibility(View.GONE);
 
-                        messagesRecyclerView.setVisibility(
-                            View.VISIBLE
-                        );
+                    messagesRecyclerView.setVisibility(View.VISIBLE);
 
-                        for (
-                            MessageEntity message :
-                            messages
-                        ) {
+                    for (MessageEntity message : messages) {
 
-                            int type =
-                                "user".equals(
-                                    message.getRole()
-                                )
-                                    ? Message.USER
-                                    : Message.ASSISTANT;
+                        int type = "user".equals(message.getRole()) ? Message.USER : Message.ASSISTANT;
 
-                            messageAdapter.addMessage(
-                                new Message(
-                                    message.getContent(),
-                                    type
-                                )
-                            );
-                        }
-
-                        autoScroll = true;
-
-                        userIsDragging = false;
-
-                        scrollToBottom();
+                        messageAdapter.addMessage(new Message(message.getContent(), type));
                     }
-                }
 
-                @Override
-                public void onError(
-                    Exception error
-                ) {
+                    autoScroll = true;
 
-                    modelStatusText.setText(
-                        "Could not load messages"
-                    );
+                    userIsDragging = false;
+
+                    scrollToBottom();
                 }
             }
-        );
+
+            @Override
+            public void onError(Exception error) {
+
+                modelStatusText.setText("Could not load messages");
+            }
+        });
     }
 
     // =============================================================
@@ -958,61 +866,40 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        modelStatusText.setText(
-            "Creating new chat..."
-        );
+        modelStatusText.setText("Creating new chat...");
 
-        llmManager.createNewConversation(
-            new LlmManager.ConversationCallback() {
+        llmManager.createNewConversation(new LlmManager.ConversationCallback() {
 
-                @Override
-                public void onSuccess(
-                    ConversationEntity conversation
-                ) {
+            @Override
+            public void onSuccess(ConversationEntity conversation) {
 
-                    currentConversationId =
-                        conversation.getId();
+                currentConversationId = conversation.getId();
 
-                    selectedConversationId =
-                        conversation.getId();
+                selectedConversationId = conversation.getId();
 
-                    messageAdapter.clearMessages();
+                messageAdapter.clearMessages();
 
-                    emptyState.setVisibility(
-                        View.VISIBLE
-                    );
+                emptyState.setVisibility(View.VISIBLE);
 
-                    messagesRecyclerView.setVisibility(
-                        View.GONE
-                    );
+                messagesRecyclerView.setVisibility(View.GONE);
 
-                    userInput.setText("");
+                userInput.setText("");
 
-                    autoScroll = true;
+                autoScroll = true;
 
-                    userIsDragging = false;
+                userIsDragging = false;
 
-                    modelStatusText.setText(
-                        modelReady
-                            ? "Model ready"
-                            : "No model loaded"
-                    );
+                modelStatusText.setText(modelReady ? "Model ready" : "No model loaded");
 
-                    refreshHistory();
-                }
-
-                @Override
-                public void onError(
-                    Exception error
-                ) {
-
-                    modelStatusText.setText(
-                        "Could not create chat: " +
-                            error.getMessage()
-                    );
-                }
+                refreshHistory();
             }
-        );
+
+            @Override
+            public void onError(Exception error) {
+
+                modelStatusText.setText("Could not create chat: " + error.getMessage());
+            }
+        });
     }
 
     // =============================================================
@@ -1021,235 +908,143 @@ public class MainActivity extends AppCompatActivity {
 
     private void openModelPicker() {
 
-        modelPicker.launch(
-            new String[]{"*/*"}
-        );
+        modelPicker.launch(new String[]{"*/*"});
     }
 
     // =============================================================
     // IMPORT / LOAD MODEL
     // =============================================================
 
-    private void importAndLoadModel(
-        Uri uri
-    ) {
+    private void importAndLoadModel(Uri uri) {
 
         loadModelButton.setEnabled(false);
 
-        loadModelButton.setText(
-            "Copying..."
-        );
+        loadModelButton.setText("Copying...");
 
-        modelStatusText.setText(
-            "Copying model..."
-        );
+        modelStatusText.setText("Copying model...");
 
-        modelNameText.setText(
-            "Loading..."
-        );
+        modelNameText.setText("Loading...");
 
         new Thread(() -> {
 
             try {
 
-                File modelsDir =
-                    new File(
-                        getFilesDir(),
-                        "models"
-                    );
+                File modelsDir = new File(getFilesDir(), "models");
 
-                if (
-                    !modelsDir.exists() &&
-                        !modelsDir.mkdirs()
-                ) {
+                if (!modelsDir.exists() && !modelsDir.mkdirs()) {
 
-                    throw new IllegalStateException(
-                        "Could not create model directory"
-                    );
+                    throw new IllegalStateException("Could not create model directory");
                 }
 
-                String fileName =
-                    getFileName(uri);
+                String fileName = getFileName(uri);
 
-                if (
-                    fileName == null ||
-                        fileName.trim().isEmpty()
-                ) {
+                if (fileName == null || fileName.trim().isEmpty()) {
 
                     fileName = "model.gguf";
                 }
 
-                final File modelFile =
-                    new File(
-                        modelsDir,
-                        fileName
-                    );
+                final File modelFile = new File(modelsDir, fileName);
 
-                try (
-                    InputStream inputStream =
-                        getContentResolver()
-                            .openInputStream(uri);
+                try (InputStream inputStream = getContentResolver().openInputStream(uri);
 
-                    FileOutputStream outputStream =
-                        new FileOutputStream(
-                            modelFile
-                        )
-                ) {
+                     FileOutputStream outputStream = new FileOutputStream(modelFile)) {
 
                     if (inputStream == null) {
 
-                        throw new IllegalStateException(
-                            "Could not open model file"
-                        );
+                        throw new IllegalStateException("Could not open model file");
                     }
 
-                    byte[] buffer =
-                        new byte[8192];
+                    byte[] buffer = new byte[8192];
 
                     int bytesRead;
 
-                    while (
-                        (bytesRead =
-                            inputStream.read(buffer))
-                            != -1
-                    ) {
+                    while ((bytesRead = inputStream.read(buffer)) != -1) {
 
-                        outputStream.write(
-                            buffer,
-                            0,
-                            bytesRead
-                        );
+                        outputStream.write(buffer, 0, bytesRead);
                     }
                 }
 
                 runOnUiThread(() -> {
 
-                    loadModelButton.setText(
-                        "Loading..."
-                    );
+                    loadModelButton.setText("Loading...");
 
-                    modelStatusText.setText(
-                        "Loading model..."
-                    );
+                    modelStatusText.setText("Loading model...");
 
-                    modelNameText.setText(
-                        "Loading..."
-                    );
+                    modelNameText.setText("Loading...");
 
-                    llmManager.loadModel(
-                        modelFile.getAbsolutePath(),
-                        new LlmManager.LoadCallback() {
+                    llmManager.loadModel(modelFile.getAbsolutePath(), new LlmManager.LoadCallback() {
 
-                            @Override
-                            public void onSuccess() {
+                        @Override
+                        public void onSuccess() {
 
-                                modelReady = true;
+                            modelReady = true;
 
-                                isGenerating = false;
+                            isGenerating = false;
 
-                                modelNameText.setText(
-                                    modelFile.getName()
-                                );
+                            modelNameText.setText(modelFile.getName());
 
-                                modelStatusText.setText(
-                                    "Model ready"
-                                );
+                            modelStatusText.setText("Model ready");
 
-                                loadModelButton.setVisibility(
-                                    View.GONE
-                                );
+                            loadModelButton.setVisibility(View.GONE);
 
-                                userInput.setEnabled(
-                                    true
-                                );
+                            userInput.setEnabled(true);
 
-                                userInput.setHint(
-                                    "Message..."
-                                );
+                            userInput.setHint("Message...");
 
-                                sendButton.setEnabled(
-                                    true
-                                );
+                            sendButton.setEnabled(true);
 
-                                sendButton.setImageResource(
-                                    R.drawable.ic_send
-                                );
+                            microphoneButton.setEnabled(true);
 
-                                loadModelButton.setEnabled(
-                                    true
-                                );
+                            microphoneButton.setContentDescription("Voice input");
 
-                                loadModelButton.setText(
-                                    "Load Model"
-                                );
+                            sendButton.setImageResource(R.drawable.ic_send);
 
-                                refreshHistory();
-                            }
+                            loadModelButton.setEnabled(true);
 
-                            @Override
-                            public void onError(
-                                Exception error
-                            ) {
+                            loadModelButton.setText("Load Model");
 
-                                modelReady = false;
-
-                                loadModelButton.setVisibility(
-                                    View.VISIBLE
-                                );
-
-                                loadModelButton.setEnabled(
-                                    true
-                                );
-
-                                loadModelButton.setText(
-                                    "Load Model"
-                                );
-
-                                modelNameText.setText(
-                                    "No model"
-                                );
-
-                                modelStatusText.setText(
-                                    "Model error: " +
-                                        error.getMessage()
-                                );
-
-                                userInput.setEnabled(
-                                    false
-                                );
-
-                                sendButton.setEnabled(
-                                    false
-                                );
-                            }
+                            refreshHistory();
                         }
-                    );
+
+                        @Override
+                        public void onError(Exception error) {
+
+                            modelReady = false;
+
+                            loadModelButton.setVisibility(View.VISIBLE);
+
+                            loadModelButton.setEnabled(true);
+
+                            loadModelButton.setText("Load Model");
+
+                            modelNameText.setText("No model");
+
+                            modelStatusText.setText("Model error: " + error.getMessage());
+
+                            userInput.setEnabled(false);
+
+                            sendButton.setEnabled(false);
+
+                            microphoneButton.setEnabled(false);
+                        }
+                    });
                 });
 
             } catch (Exception error) {
 
                 runOnUiThread(() -> {
 
-                    loadModelButton.setVisibility(
-                        View.VISIBLE
-                    );
+                    loadModelButton.setVisibility(View.VISIBLE);
 
-                    loadModelButton.setEnabled(
-                        true
-                    );
+                    loadModelButton.setEnabled(true);
 
-                    loadModelButton.setText(
-                        "Load Model"
-                    );
+                    loadModelButton.setText("Load Model");
 
-                    modelNameText.setText(
-                        "No model"
-                    );
+                    modelNameText.setText("No model");
 
-                    modelStatusText.setText(
-                        "Error: " +
-                            error.getMessage()
-                    );
+                    modelStatusText.setText("Error: " + error.getMessage());
+
+                    microphoneButton.setEnabled(false);
                 });
             }
 
@@ -1262,21 +1057,30 @@ public class MainActivity extends AppCompatActivity {
 
     private void sendMessage() {
 
-        if (
-            !modelReady ||
-                isGenerating
-        ) {
+        if (!modelReady || isGenerating) {
+
             return;
         }
 
-        String message =
-            userInput
-                .getText()
-                .toString()
-                .trim();
+        String message = userInput.getText().toString().trim();
 
         if (message.isEmpty()) {
             return;
+        }
+
+        // Make sure voice recognition is not running
+        // when the user sends the message.
+        if (isListening) {
+
+            speechToTextEngine.cancelListening();
+
+            isListening = false;
+
+            hideListeningUI();
+
+            microphoneButton.setContentDescription(
+                "Voice input"
+            );
         }
 
         showChat();
@@ -1289,225 +1093,131 @@ public class MainActivity extends AppCompatActivity {
 
         sendButton.setEnabled(true);
 
-        sendButton.setImageResource(
-            R.drawable.ic_stop
-        );
+        sendButton.setImageResource(R.drawable.ic_stop);
 
-        sendButton.setContentDescription(
-            "Stop generation"
-        );
+        sendButton.setContentDescription("Stop generation");
 
-        modelStatusText.setText(
-            "Thinking..."
-        );
+        modelStatusText.setText("Thinking...");
 
-        messageAdapter.addMessage(
-            new Message(
-                message,
-                Message.USER
-            )
-        );
+        messageAdapter.addMessage(new Message(message, Message.USER));
 
         userInput.setText("");
 
-        messageAdapter.addMessage(
-            new Message(
-                "",
-                Message.ASSISTANT
-            )
-        );
+        messageAdapter.addMessage(new Message("", Message.ASSISTANT));
 
-        messageAdapter.setThinking(
-            true,
-            messagesRecyclerView
-        );
+        messageAdapter.setThinking(true, messagesRecyclerView);
 
         scrollToBottom();
 
         refreshHistory();
 
-        final StringBuilder response =
-            new StringBuilder();
+        final StringBuilder response = new StringBuilder();
 
-        llmManager.sendMessage(
-            message,
-            new LlmManager.ChatCallback() {
+        llmManager.sendMessage(message, new LlmManager.ChatCallback() {
 
-                @Override
-                public void onToken(
-                    String token
-                ) {
+            @Override
+            public void onToken(String token) {
 
-                    if (
-                        LlmManager.THINKING_SIGNAL
-                            .equals(token)
-                    ) {
+                if (LlmManager.THINKING_SIGNAL.equals(token)) {
 
-                        messageAdapter.setThinking(
-                            true,
-                            messagesRecyclerView
-                        );
+                    messageAdapter.setThinking(true, messagesRecyclerView);
 
-                        modelStatusText.setText(
-                            "Thinking..."
-                        );
+                    modelStatusText.setText("Thinking...");
 
-                        return;
-                    }
-
-                    if (
-                        messageAdapter.isThinking()
-                    ) {
-
-                        messageAdapter.setThinking(
-                            false,
-                            messagesRecyclerView
-                        );
-                    }
-
-                    response.setLength(0);
-
-                    response.append(token);
-
-                    boolean followResponse =
-                        autoScroll &&
-                            !userIsDragging;
-
-                    messageAdapter.updateLastMessage(
-                        response.toString(),
-                        messagesRecyclerView
-                    );
-
-                    modelStatusText.setText(
-                        "Generating..."
-                    );
-
-                    if (followResponse) {
-                        keepLastMessageAtBottom();
-                    }
+                    return;
                 }
 
-                @Override
-                public void onComplete(
-                    String fullResponse
-                ) {
+                if (messageAdapter.isThinking()) {
 
-                    isGenerating = false;
-
-                    messageAdapter.setThinking(
-                        false,
-                        messagesRecyclerView
-                    );
-
-                    sendButton.setEnabled(
-                        true
-                    );
-
-                    sendButton.setImageResource(
-                        R.drawable.ic_send
-                    );
-
-                    sendButton.setContentDescription(
-                        "Send message"
-                    );
-
-                    modelStatusText.setText(
-                        "Model ready"
-                    );
-
-                    refreshHistory();
-
-                    if (
-                        autoScroll &&
-                            !userIsDragging
-                    ) {
-
-                        keepLastMessageAtBottom();
-                    }
+                    messageAdapter.setThinking(false, messagesRecyclerView);
                 }
 
-                @Override
-                public void onStopped() {
+                response.setLength(0);
 
-                    isGenerating = false;
+                response.append(token);
 
-                    messageAdapter.setThinking(
-                        false,
-                        messagesRecyclerView
-                    );
+                boolean followResponse = autoScroll && !userIsDragging;
 
-                    sendButton.setEnabled(
-                        true
-                    );
+                messageAdapter.updateLastMessage(response.toString(), messagesRecyclerView);
 
-                    sendButton.setImageResource(
-                        R.drawable.ic_send
-                    );
+                modelStatusText.setText("Generating...");
 
-                    sendButton.setContentDescription(
-                        "Send message"
-                    );
+                if (followResponse) {
 
-                    modelStatusText.setText(
-                        "Generation stopped"
-                    );
-
-                    refreshHistory();
-                }
-
-                @Override
-                public void onError(
-                    Exception error
-                ) {
-
-                    isGenerating = false;
-
-                    messageAdapter.setThinking(
-                        false,
-                        messagesRecyclerView
-                    );
-
-                    response.append(
-                        "\n\nError: "
-                    );
-
-                    response.append(
-                        error.getMessage()
-                    );
-
-                    messageAdapter.updateLastMessage(
-                        response.toString(),
-                        messagesRecyclerView
-                    );
-
-                    sendButton.setEnabled(
-                        true
-                    );
-
-                    sendButton.setImageResource(
-                        R.drawable.ic_send
-                    );
-
-                    sendButton.setContentDescription(
-                        "Send message"
-                    );
-
-                    modelStatusText.setText(
-                        "Generation error"
-                    );
-
-                    refreshHistory();
-
-                    if (
-                        autoScroll &&
-                            !userIsDragging
-                    ) {
-
-                        keepLastMessageAtBottom();
-                    }
+                    keepLastMessageAtBottom();
                 }
             }
-        );
+
+            @Override
+            public void onComplete(String fullResponse) {
+
+                isGenerating = false;
+
+                messageAdapter.setThinking(false, messagesRecyclerView);
+
+                sendButton.setEnabled(true);
+
+                sendButton.setImageResource(R.drawable.ic_send);
+
+                sendButton.setContentDescription("Send message");
+
+                modelStatusText.setText("Model ready");
+
+                refreshHistory();
+
+                if (autoScroll && !userIsDragging) {
+
+                    keepLastMessageAtBottom();
+                }
+            }
+
+            @Override
+            public void onStopped() {
+
+                isGenerating = false;
+
+                messageAdapter.setThinking(false, messagesRecyclerView);
+
+                sendButton.setEnabled(true);
+
+                sendButton.setImageResource(R.drawable.ic_send);
+
+                sendButton.setContentDescription("Send message");
+
+                modelStatusText.setText("Generation stopped");
+
+                refreshHistory();
+            }
+
+            @Override
+            public void onError(Exception error) {
+
+                isGenerating = false;
+
+                messageAdapter.setThinking(false, messagesRecyclerView);
+
+                response.append("\n\nError: ");
+
+                response.append(error.getMessage());
+
+                messageAdapter.updateLastMessage(response.toString(), messagesRecyclerView);
+
+                sendButton.setEnabled(true);
+
+                sendButton.setImageResource(R.drawable.ic_send);
+
+                sendButton.setContentDescription("Send message");
+
+                modelStatusText.setText("Generation error");
+
+                refreshHistory();
+
+                if (autoScroll && !userIsDragging) {
+
+                    keepLastMessageAtBottom();
+                }
+            }
+        });
     }
 
     // =============================================================
@@ -1524,24 +1234,15 @@ public class MainActivity extends AppCompatActivity {
 
         isGenerating = false;
 
-        messageAdapter.setThinking(
-            false,
-            messagesRecyclerView
-        );
+        messageAdapter.setThinking(false, messagesRecyclerView);
 
         sendButton.setEnabled(true);
 
-        sendButton.setImageResource(
-            R.drawable.ic_send
-        );
+        sendButton.setImageResource(R.drawable.ic_send);
 
-        sendButton.setContentDescription(
-            "Send message"
-        );
+        sendButton.setContentDescription("Send message");
 
-        modelStatusText.setText(
-            "Generation stopped"
-        );
+        modelStatusText.setText("Generation stopped");
     }
 
     // =============================================================
@@ -1550,13 +1251,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void showChat() {
 
-        emptyState.setVisibility(
-            View.GONE
-        );
+        emptyState.setVisibility(View.GONE);
 
-        messagesRecyclerView.setVisibility(
-            View.VISIBLE
-        );
+        messagesRecyclerView.setVisibility(View.VISIBLE);
     }
 
     // =============================================================
@@ -1565,88 +1262,60 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isAtBottom() {
 
-        return !messagesRecyclerView
-            .canScrollVertically(1);
+        return !messagesRecyclerView.canScrollVertically(1);
     }
 
     private void scrollToBottom() {
 
-        if (
-            messageAdapter == null ||
-                messagesRecyclerView == null ||
-                messageAdapter.getItemCount() == 0
-        ) {
+        if (messageAdapter == null || messagesRecyclerView == null || messageAdapter.getItemCount() == 0) {
+
             return;
         }
 
         messagesRecyclerView.post(() -> {
 
-            int lastPosition =
-                messageAdapter.getItemCount() - 1;
+            int lastPosition = messageAdapter.getItemCount() - 1;
 
-            layoutManager.scrollToPosition(
-                lastPosition
-            );
+            layoutManager.scrollToPosition(lastPosition);
         });
     }
 
     private void keepLastMessageAtBottom() {
 
-        if (
-            !autoScroll ||
-                userIsDragging
-        ) {
+        if (!autoScroll || userIsDragging) {
+
             return;
         }
 
-        if (
-            messageAdapter == null ||
-                messagesRecyclerView == null ||
-                messageAdapter.getItemCount() == 0
-        ) {
+        if (messageAdapter == null || messagesRecyclerView == null || messageAdapter.getItemCount() == 0) {
+
             return;
         }
 
         messagesRecyclerView.post(() -> {
 
-            if (
-                !autoScroll ||
-                    userIsDragging
-            ) {
+            if (!autoScroll || userIsDragging) {
+
                 return;
             }
 
-            int lastPosition =
-                messageAdapter.getItemCount() - 1;
+            int lastPosition = messageAdapter.getItemCount() - 1;
 
-            RecyclerView.ViewHolder holder =
-                messagesRecyclerView
-                    .findViewHolderForAdapterPosition(
-                        lastPosition
-                    );
+            RecyclerView.ViewHolder holder = messagesRecyclerView.findViewHolderForAdapterPosition(lastPosition);
 
             if (holder == null) {
                 return;
             }
 
-            View lastView =
-                holder.itemView;
+            View lastView = holder.itemView;
 
-            int recyclerBottom =
-                messagesRecyclerView.getHeight()
-                    - messagesRecyclerView
-                    .getPaddingBottom();
+            int recyclerBottom = messagesRecyclerView.getHeight() - messagesRecyclerView.getPaddingBottom();
 
-            int difference =
-                lastView.getBottom()
-                    - recyclerBottom;
+            int difference = lastView.getBottom() - recyclerBottom;
 
             if (difference > 0) {
 
-                messagesRecyclerView.scrollBy(
-                    0,
-                    difference
-                );
+                messagesRecyclerView.scrollBy(0, difference);
             }
         });
     }
@@ -1655,107 +1324,54 @@ public class MainActivity extends AppCompatActivity {
     // DATE HELPERS
     // =============================================================
 
-    private boolean isToday(
-        long timestamp
-    ) {
+    private boolean isToday(long timestamp) {
 
-        Calendar target =
-            Calendar.getInstance();
+        Calendar target = Calendar.getInstance();
 
-        target.setTimeInMillis(
-            timestamp
-        );
+        target.setTimeInMillis(timestamp);
 
-        Calendar today =
-            Calendar.getInstance();
+        Calendar today = Calendar.getInstance();
 
-        return target.get(Calendar.YEAR) ==
-            today.get(Calendar.YEAR)
-            &&
-            target.get(Calendar.DAY_OF_YEAR) ==
-                today.get(Calendar.DAY_OF_YEAR);
+        return target.get(Calendar.YEAR) == today.get(Calendar.YEAR) && target.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR);
     }
 
-    private boolean isYesterday(
-        long timestamp
-    ) {
+    private boolean isYesterday(long timestamp) {
 
-        Calendar target =
-            Calendar.getInstance();
+        Calendar target = Calendar.getInstance();
 
-        target.setTimeInMillis(
-            timestamp
-        );
+        target.setTimeInMillis(timestamp);
 
-        Calendar yesterday =
-            Calendar.getInstance();
+        Calendar yesterday = Calendar.getInstance();
 
-        yesterday.add(
-            Calendar.DAY_OF_YEAR,
-            -1
-        );
+        yesterday.add(Calendar.DAY_OF_YEAR, -1);
 
-        return target.get(Calendar.YEAR) ==
-            yesterday.get(Calendar.YEAR)
-            &&
-            target.get(Calendar.DAY_OF_YEAR) ==
-                yesterday.get(Calendar.DAY_OF_YEAR);
+        return target.get(Calendar.YEAR) == yesterday.get(Calendar.YEAR) && target.get(Calendar.DAY_OF_YEAR) == yesterday.get(Calendar.DAY_OF_YEAR);
     }
 
-    private int dp(
-        int value
-    ) {
+    private int dp(int value) {
 
-        return (int) (
-            value *
-                getResources()
-                    .getDisplayMetrics()
-                    .density
-        );
+        return (int) (value * getResources().getDisplayMetrics().density);
     }
 
     // =============================================================
     // FILE NAME
     // =============================================================
 
-    private String getFileName(
-        Uri uri
-    ) {
+    private String getFileName(Uri uri) {
 
         String result = null;
 
-        if (
-            "content".equals(
-                uri.getScheme()
-            )
-        ) {
+        if ("content".equals(uri.getScheme())) {
 
-            try (
-                Cursor cursor =
-                    getContentResolver()
-                        .query(
-                            uri,
-                            null,
-                            null,
-                            null,
-                            null
-                        )
-            ) {
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
 
-                if (
-                    cursor != null &&
-                        cursor.moveToFirst()
-                ) {
+                if (cursor != null && cursor.moveToFirst()) {
 
-                    int index =
-                        cursor.getColumnIndex(
-                            OpenableColumns.DISPLAY_NAME
-                        );
+                    int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
 
                     if (index >= 0) {
 
-                        result =
-                            cursor.getString(index);
+                        result = cursor.getString(index);
                     }
                 }
             }
@@ -1767,20 +1383,122 @@ public class MainActivity extends AppCompatActivity {
 
             if (result != null) {
 
-                int cut =
-                    result.lastIndexOf('/');
+                int cut = result.lastIndexOf('/');
 
                 if (cut != -1) {
 
-                    result =
-                        result.substring(
-                            cut + 1
-                        );
+                    result = result.substring(cut + 1);
                 }
             }
         }
 
         return result;
+    }
+
+    // =============================================================
+    // VOICE INPUT
+    // =============================================================
+
+    private void startVoiceInput() {
+
+        if (!modelReady || isGenerating) {
+            return;
+        }
+
+        if (speechToTextEngine == null) {
+
+            modelStatusText.setText(
+                "Speech recognition unavailable"
+            );
+
+            return;
+        }
+
+        if (ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) != PackageManager.PERMISSION_GRANTED) {
+
+            ActivityCompat.requestPermissions(
+                this,
+                new String[]{
+                    Manifest.permission.RECORD_AUDIO
+                },
+                RECORD_AUDIO_REQUEST_CODE
+            );
+
+            return;
+        }
+
+        isListening = true;
+
+        microphoneButton.setContentDescription(
+            "Stop listening"
+        );
+
+        modelStatusText.setText(
+            "Starting voice input..."
+        );
+
+        voiceListeningText.setText(
+            "Starting..."
+        );
+
+        voiceListeningSubtext.setText(
+            "Preparing microphone"
+        );
+
+        showListeningUI();
+
+        speechToTextEngine.startListening();
+    }
+
+    private void stopVoiceInput() {
+
+        if (speechToTextEngine != null) {
+
+            speechToTextEngine.stopListening();
+        }
+
+        isListening = false;
+
+        hideListeningUI();
+
+        microphoneButton.setContentDescription(
+            "Voice input"
+        );
+
+        modelStatusText.setText(
+            modelReady
+                ? "Model ready"
+                : "No model loaded"
+        );
+    }
+
+    // =============================================================
+    // PERMISSION RESULT
+    // =============================================================
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == RECORD_AUDIO_REQUEST_CODE) {
+
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+
+                startVoiceInput();
+
+            } else {
+
+                isListening = false;
+
+                microphoneButton.setContentDescription("Voice input");
+
+                modelStatusText.setText("Microphone permission denied");
+            }
+        }
     }
 
     // =============================================================
@@ -1790,11 +1508,98 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
 
+        /*
+         * Cancel voice recognition first.
+         * This prevents the SpeechRecognizer from
+         * continuing to use the Activity after it is destroyed.
+         */
+
+        if (speechToTextEngine != null) {
+
+            speechToTextEngine.cancelListening();
+
+            speechToTextEngine.destroy();
+        }
+
         if (llmManager != null) {
 
             llmManager.destroy();
         }
 
         super.onDestroy();
+    }
+
+    private void showListeningUI() {
+
+        voiceListeningContainer.setVisibility(View.VISIBLE);
+
+        voiceListeningText.setText("Listening...");
+        voiceListeningSubtext.setText("Speak now");
+
+        voiceListeningIcon.setScaleX(1.0f);
+        voiceListeningIcon.setScaleY(1.0f);
+
+        if (voicePulseAnimator != null) {
+            voicePulseAnimator.cancel();
+        }
+
+        ObjectAnimator scaleX = ObjectAnimator.ofFloat(
+            voiceListeningIcon,
+            View.SCALE_X,
+            1.0f,
+            1.18f,
+            1.0f
+        );
+
+        ObjectAnimator scaleY = ObjectAnimator.ofFloat(
+            voiceListeningIcon,
+            View.SCALE_Y,
+            1.0f,
+            1.18f,
+            1.0f
+        );
+
+        scaleX.setDuration(900);
+        scaleY.setDuration(900);
+
+        voicePulseAnimator = new AnimatorSet();
+
+        voicePulseAnimator.playTogether(
+            scaleX,
+            scaleY
+        );
+
+        voicePulseAnimator.setInterpolator(
+            new AccelerateDecelerateInterpolator()
+        );
+
+        voicePulseAnimator.addListener(
+            new AnimatorListenerAdapter() {
+
+                @Override
+                public void onAnimationEnd(Animator animation) {
+
+                    if (isListening) {
+                        voicePulseAnimator.start();
+                    }
+                }
+            }
+        );
+
+        voicePulseAnimator.start();
+    }
+    private void hideListeningUI() {
+
+        if (voicePulseAnimator != null) {
+
+            voicePulseAnimator.cancel();
+
+            voicePulseAnimator = null;
+        }
+
+        voiceListeningIcon.setScaleX(1.0f);
+        voiceListeningIcon.setScaleY(1.0f);
+
+        voiceListeningContainer.setVisibility(View.GONE);
     }
 }

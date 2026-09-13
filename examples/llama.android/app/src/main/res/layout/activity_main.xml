@@ -272,6 +272,66 @@
         app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- ========================================================= -->
+    <!-- VOICE LISTENING PANEL -->
+    <!-- ========================================================= -->
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/voiceListeningContainer"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="8dp"
+        android:background="@drawable/bg_voice_listening"
+        android:padding="12dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/composerContainer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageView
+            android:id="@+id/voiceListeningIcon"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:contentDescription="Listening"
+            android:src="@drawable/ic_mic"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:orientation="vertical"
+            app:layout_constraintStart_toEndOf="@id/voiceListeningIcon"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent">
+
+            <TextView
+                android:id="@+id/voiceListeningText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Listening..."
+                android:textColor="#111111"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/voiceListeningSubtext"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Speak now"
+                android:textColor="#777777"
+                android:textSize="13sp" />
+
+        </LinearLayout>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- ========================================================= -->
     <!-- COMPOSER -->
     <!-- ========================================================= -->
 
@@ -303,7 +363,6 @@
             app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent" />
 
-
         <!-- Input -->
 
         <EditText
@@ -311,7 +370,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="4dp"
-            android:layout_marginEnd="4dp"
+            android:layout_marginEnd="2dp"
             android:background="@android:color/transparent"
             android:gravity="center_vertical"
             android:hint="Load a model to start chatting..."
@@ -319,13 +378,30 @@
             android:maxLines="5"
             android:minHeight="42dp"
             android:paddingStart="8dp"
-            android:paddingEnd="8dp"
+            android:paddingEnd="4dp"
             android:paddingTop="8dp"
             android:paddingBottom="8dp"
             android:textColor="#111111"
             android:textColorHint="#999999"
             android:textSize="15sp"
             app:layout_constraintStart_toEndOf="@id/addButton"
+            app:layout_constraintEnd_toStartOf="@id/microphoneButton"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+
+        <!-- Microphone -->
+
+        <ImageButton
+            android:id="@+id/microphoneButton"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_marginEnd="2dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Voice input"
+            android:enabled="false"
+            android:padding="10dp"
+            android:src="@drawable/ic_mic"
             app:layout_constraintEnd_toStartOf="@id/sendButton"
             app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent" />

@@ -1,7 +1,7 @@
 package com.example.llama
 
 import android.content.Context
-import com.arm.aichat.internal.InferenceEngineImpl
+import com.example.llama.ai.chat.LlamaChatEngine
 import com.example.llama.memory.ContextBuilder
 import com.example.llama.memory.ConversationEntity
 import com.example.llama.memory.MemoryManager
@@ -20,34 +20,29 @@ class LlmManager(context: Context) {
 
     private val appContext = context.applicationContext
 
-    private val engine =
-        InferenceEngineImpl.getInstance(appContext)
+    private val engine = LlamaChatEngine(appContext)
 
     /*
      * MemoryManager owns the Room database.
      */
-    private val memoryManager =
-        MemoryManager(appContext)
+    private val memoryManager = MemoryManager(appContext)
 
-    private val contextBuilder =
-        ContextBuilder(
-            memoryManager = memoryManager
-        )
+    private val contextBuilder = ContextBuilder(
+        memoryManager = memoryManager
+    )
 
     /*
      * Main manager scope.
      */
-    private val scope =
-        CoroutineScope(
-            SupervisorJob() + Dispatchers.Default
-        )
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default
+    )
 
     /*
      * Only one operation may use the native
      * llama.cpp engine at a time.
      */
-    private val engineMutex =
-        Mutex()
+    private val engineMutex = Mutex()
 
     @Volatile
     private var generationStopped = false
@@ -123,8 +118,7 @@ class LlmManager(context: Context) {
     // ========================================================================
 
     fun loadModel(
-        modelPath: String,
-        callback: LoadCallback
+        modelPath: String, callback: LoadCallback
     ) {
 
         scope.launch {
@@ -146,12 +140,9 @@ class LlmManager(context: Context) {
                     /*
                      * Restore the most recently used conversation.
                      */
-                    val conversation =
-                        memoryManager
-                            .getOrCreateCurrentConversation()
+                    val conversation = memoryManager.getOrCreateCurrentConversation()
 
-                    currentConversationId =
-                        conversation.id
+                    currentConversationId = conversation.id
 
                     modelLoaded = true
 
@@ -181,8 +172,7 @@ class LlmManager(context: Context) {
     // ========================================================================
 
     fun sendMessage(
-        message: String,
-        callback: ChatCallback
+        message: String, callback: ChatCallback
     ) {
 
         scope.launch {
@@ -205,8 +195,7 @@ class LlmManager(context: Context) {
                 /*
                  * Capture the conversation before starting.
                  */
-                val conversationId =
-                    currentConversationId
+                val conversationId = currentConversationId
 
                 if (conversationId == -1L) {
 
@@ -227,9 +216,7 @@ class LlmManager(context: Context) {
                  * Save user message in the correct conversation.
                  */
                 memoryManager.saveMessage(
-                    conversationId = conversationId,
-                    role = "user",
-                    content = message
+                    conversationId = conversationId, role = "user", content = message
                 )
 
                 /*
@@ -241,11 +228,9 @@ class LlmManager(context: Context) {
                     )
                 }
 
-                val responseBuilder =
-                    StringBuilder()
+                val responseBuilder = StringBuilder()
 
-                var lastUiUpdate =
-                    System.currentTimeMillis()
+                var lastUiUpdate = System.currentTimeMillis()
 
                 engineMutex.withLock {
 
@@ -253,58 +238,42 @@ class LlmManager(context: Context) {
                      * Make sure the user has not switched chats
                      * before generation starts.
                      */
-                    if (
-                        conversationId != currentConversationId ||
-                        generationStopped
-                    ) {
+                    if (conversationId != currentConversationId || generationStopped) {
                         return@withLock
                     }
 
-                    engine
-                        .sendUserPrompt(message)
-                        .collect { token ->
+                    engine.sendMessage(message).collect { token ->
 
-                            if (
-                                generationStopped ||
-                                conversationId != currentConversationId
-                            ) {
-                                return@collect
-                            }
-
-                            responseBuilder.append(token)
-
-                            val now =
-                                System.currentTimeMillis()
-
-                            /*
-                             * Do not update the Android UI for
-                             * every individual native token.
-                             */
-                            if (
-                                now - lastUiUpdate >=
-                                UI_UPDATE_INTERVAL_MS
-                            ) {
-
-                                val text =
-                                    responseBuilder.toString()
-
-                                withMain {
-                                    callback.onToken(text)
-                                }
-
-                                lastUiUpdate = now
-                            }
+                        if (generationStopped || conversationId != currentConversationId) {
+                            return@collect
                         }
+
+                        responseBuilder.append(token)
+
+                        val now = System.currentTimeMillis()
+
+                        /*
+                         * Do not update the Android UI for
+                         * every individual native token.
+                         */
+                        if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
+
+                            val text = responseBuilder.toString()
+
+                            withMain {
+                                callback.onToken(text)
+                            }
+
+                            lastUiUpdate = now
+                        }
+                    }
                 }
 
                 /*
                  * Conversation was switched or generation
                  * was stopped.
                  */
-                if (
-                    generationStopped ||
-                    conversationId != currentConversationId
-                ) {
+                if (generationStopped || conversationId != currentConversationId) {
 
                     withMain {
                         callback.onStopped()
@@ -313,8 +282,7 @@ class LlmManager(context: Context) {
                     return@launch
                 }
 
-                val finalResponse =
-                    responseBuilder.toString()
+                val finalResponse = responseBuilder.toString()
 
                 /*
                  * Make sure the final UI text is displayed.
@@ -328,9 +296,7 @@ class LlmManager(context: Context) {
                  * conversation.
                  */
                 memoryManager.saveMessage(
-                    conversationId = conversationId,
-                    role = "assistant",
-                    content = finalResponse
+                    conversationId = conversationId, role = "assistant", content = finalResponse
                 )
 
                 withMain {
@@ -392,8 +358,7 @@ class LlmManager(context: Context) {
                 /*
                  * Create the new Room conversation first.
                  */
-                val conversation =
-                    memoryManager.createConversation()
+                val conversation = memoryManager.createConversation()
 
                 if (modelLoaded) {
 
@@ -408,8 +373,7 @@ class LlmManager(context: Context) {
                         /*
                          * Select the new conversation.
                          */
-                        currentConversationId =
-                            conversation.id
+                        currentConversationId = conversation.id
 
                         /*
                          * Build a fresh context.
@@ -419,8 +383,7 @@ class LlmManager(context: Context) {
 
                 } else {
 
-                    currentConversationId =
-                        conversation.id
+                    currentConversationId = conversation.id
                 }
 
                 withMain {
@@ -441,8 +404,7 @@ class LlmManager(context: Context) {
     // ========================================================================
 
     fun selectConversation(
-        conversationId: Long,
-        callback: ConversationCallback
+        conversationId: Long, callback: ConversationCallback
     ) {
 
         scope.launch {
@@ -456,13 +418,11 @@ class LlmManager(context: Context) {
                 /*
                  * Make sure the conversation actually exists.
                  */
-                val conversation =
-                    memoryManager.getConversation(
-                        conversationId
-                    )
-                        ?: throw IllegalArgumentException(
-                            "Conversation not found: $conversationId"
-                        )
+                val conversation = memoryManager.getConversation(
+                    conversationId
+                ) ?: throw IllegalArgumentException(
+                    "Conversation not found: $conversationId"
+                )
 
                 if (modelLoaded) {
 
@@ -479,8 +439,7 @@ class LlmManager(context: Context) {
                         /*
                          * Change the active Room conversation.
                          */
-                        currentConversationId =
-                            conversation.id
+                        currentConversationId = conversation.id
 
                         /*
                          * Rebuild native context using ONLY
@@ -491,8 +450,7 @@ class LlmManager(context: Context) {
 
                 } else {
 
-                    currentConversationId =
-                        conversation.id
+                    currentConversationId = conversation.id
                 }
 
                 withMain {
@@ -513,8 +471,7 @@ class LlmManager(context: Context) {
     // ========================================================================
 
     fun deleteConversation(
-        conversationId: Long,
-        callback: ConversationCallback
+        conversationId: Long, callback: ConversationCallback
     ) {
 
         scope.launch {
@@ -533,14 +490,9 @@ class LlmManager(context: Context) {
                  * If the deleted conversation was active,
                  * choose/create another conversation.
                  */
-                if (
-                    currentConversationId ==
-                    conversationId
-                ) {
+                if (currentConversationId == conversationId) {
 
-                    val newConversation =
-                        memoryManager
-                            .getOrCreateCurrentConversation()
+                    val newConversation = memoryManager.getOrCreateCurrentConversation()
 
                     if (modelLoaded) {
 
@@ -548,16 +500,14 @@ class LlmManager(context: Context) {
 
                             engine.resetConversation()
 
-                            currentConversationId =
-                                newConversation.id
+                            currentConversationId = newConversation.id
 
                             rebuildConversationContext()
                         }
 
                     } else {
 
-                        currentConversationId =
-                            newConversation.id
+                        currentConversationId = newConversation.id
                     }
 
                     withMain {
@@ -601,12 +551,9 @@ class LlmManager(context: Context) {
 
             try {
 
-                val conversation =
-                    memoryManager
-                        .getOrCreateCurrentConversation()
+                val conversation = memoryManager.getOrCreateCurrentConversation()
 
-                currentConversationId =
-                    conversation.id
+                currentConversationId = conversation.id
 
                 withMain {
                     callback.onSuccess(conversation)
@@ -634,10 +581,9 @@ class LlmManager(context: Context) {
 
             try {
 
-                val conversation =
-                    memoryManager.getConversation(
-                        currentConversationId
-                    )
+                val conversation = memoryManager.getConversation(
+                    currentConversationId
+                )
 
                 withMain {
                     callback(conversation)
@@ -667,8 +613,7 @@ class LlmManager(context: Context) {
 
             try {
 
-                val conversations =
-                    memoryManager.getAllConversations()
+                val conversations = memoryManager.getAllConversations()
 
                 withMain {
                     callback.onSuccess(conversations)
@@ -701,18 +646,16 @@ class LlmManager(context: Context) {
      * Name matches MainActivity.
      */
     fun getConversationMessages(
-        conversationId: Long,
-        callback: MessagesCallback
+        conversationId: Long, callback: MessagesCallback
     ) {
 
         scope.launch {
 
             try {
 
-                val messages =
-                    memoryManager.getAllMessages(
-                        conversationId
-                    )
+                val messages = memoryManager.getAllMessages(
+                    conversationId
+                )
 
                 withMain {
                     callback.onSuccess(messages)
@@ -731,13 +674,11 @@ class LlmManager(context: Context) {
      * Keep this alias available too.
      */
     fun getMessages(
-        conversationId: Long,
-        callback: MessagesCallback
+        conversationId: Long, callback: MessagesCallback
     ) {
 
         getConversationMessages(
-            conversationId,
-            callback
+            conversationId, callback
         )
     }
 
@@ -758,22 +699,42 @@ class LlmManager(context: Context) {
          * 2. Current conversation summary
          * 3. Recent messages from CURRENT conversation
          */
-        val prompt =
-            contextBuilder.buildContext(
-                conversationId =
-                    currentConversationId,
+        val prompt = contextBuilder.buildContext(
+            conversationId = currentConversationId,
 
-                currentMessage = "",
+            currentMessage = "",
 
-                recentMessageLimit =
-                    RECENT_MESSAGE_COUNT
-            )
+            recentMessageLimit = RECENT_MESSAGE_COUNT
+        )
 
         /*
-         * resetConversation() makes the native engine
-         * ready to receive a new system prompt.
+         * A new conversation may have:
+         *
+         * - no memories
+         * - no summary
+         * - no messages
+         *
+         * In that case ContextBuilder can return an empty
+         * prompt. llama.cpp requires a non-empty system prompt.
          */
-        engine.setSystemPrompt(prompt)
+        val finalPrompt = if (prompt.isBlank()) {
+
+            """
+            You are a helpful offline AI assistant.
+            Answer the user's questions clearly and accurately.
+            Be concise unless the user asks for more detail.
+            Do not invent facts.
+            """.trimIndent()
+
+        } else {
+
+            prompt
+        }
+
+        /*
+         * Send the final system prompt to the LLM.
+         */
+        engine.setSystemPrompt(finalPrompt)
     }
 
     // ========================================================================
@@ -786,34 +747,28 @@ class LlmManager(context: Context) {
 
         summaryJob?.cancel()
 
-        summaryJob =
-            scope.launch {
+        summaryJob = scope.launch {
 
-                try {
+            try {
 
-                    val count =
-                        memoryManager.getMessageCount(
-                            conversationId
-                        )
+                val count = memoryManager.getMessageCount(
+                    conversationId
+                )
 
-                    if (
-                        count <
-                        SUMMARY_TRIGGER
-                    ) {
-                        return@launch
-                    }
+                if (count < SUMMARY_TRIGGER) {
+                    return@launch
+                }
 
-                    generateConversationSummary(
-                        conversationId
-                    )
+                generateConversationSummary(
+                    conversationId
+                )
 
-                } catch (_: Exception) {
-                    /*
+            } catch (_: Exception) {/*
                      * Summary failure must never
                      * break normal chat.
                      */
-                }
             }
+        }
     }
 
     private suspend fun generateConversationSummary(
@@ -828,18 +783,15 @@ class LlmManager(context: Context) {
             return
         }
 
-        val messages =
-            memoryManager.getRecentMessages(
-                conversationId,
-                SUMMARY_MESSAGE_COUNT
-            )
+        val messages = memoryManager.getRecentMessages(
+            conversationId, SUMMARY_MESSAGE_COUNT
+        )
 
         if (messages.isEmpty()) {
             return
         }
 
-        val promptBuilder =
-            StringBuilder()
+        val promptBuilder = StringBuilder()
 
         promptBuilder.append(
             """
@@ -863,8 +815,7 @@ class LlmManager(context: Context) {
             promptBuilder.append(message.content)
         }
 
-        val summaryBuilder =
-            StringBuilder()
+        val summaryBuilder = StringBuilder()
 
         /*
          * Summary inference uses the same native engine.
@@ -889,31 +840,22 @@ class LlmManager(context: Context) {
              * system prompt.
              */
             engine.setSystemPrompt(
-                "You are a conversation summarizer. " +
-                    "Return only a concise factual summary."
+                "You are a conversation summarizer. " + "Return only a concise factual summary."
             )
 
-            engine
-                .sendUserPrompt(
-                    promptBuilder.toString(),
-                    predictLength =
-                        SUMMARY_MAX_TOKENS
-                )
-                .collect { token ->
+            engine.sendMessage(
+                promptBuilder.toString(), predictLength = SUMMARY_MAX_TOKENS
+            ).collect { token ->
 
-                    summaryBuilder.append(token)
-                }
+                summaryBuilder.append(token)
+            }
 
-            val summary =
-                summaryBuilder
-                    .toString()
-                    .trim()
+            val summary = summaryBuilder.toString().trim()
 
             if (summary.isNotEmpty()) {
 
                 memoryManager.saveConversationSummary(
-                    conversationId = conversationId,
-                    summary = summary
+                    conversationId = conversationId, summary = summary
                 )
             }
 
@@ -926,10 +868,7 @@ class LlmManager(context: Context) {
              * Restore the actual chat context before
              * releasing the mutex.
              */
-            if (
-                conversationId ==
-                currentConversationId
-            ) {
+            if (conversationId == currentConversationId) {
 
                 engine.resetConversation()
 
@@ -952,7 +891,7 @@ class LlmManager(context: Context) {
 
             engineMutex.withLock {
 
-                engine.cleanUp()
+                engine.unload()
 
                 modelLoaded = false
             }
