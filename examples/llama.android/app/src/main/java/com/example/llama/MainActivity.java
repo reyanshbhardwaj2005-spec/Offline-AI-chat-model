@@ -27,7 +27,9 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.llama.ai.voice.AndroidSpeechToTextEngine;
+import com.example.llama.ai.voice.AndroidTextToSpeechEngine;
 import com.example.llama.ai.voice.SpeechToTextEngine;
+import com.example.llama.ai.voice.TextToSpeechEngine;
 import com.example.llama.memory.ConversationEntity;
 import com.example.llama.memory.MessageEntity;
 
@@ -49,7 +51,6 @@ public class MainActivity extends AppCompatActivity {
     // =============================================================
     // CHAT UI
     // =============================================================
-
     private TextView modelNameText;
     private TextView modelStatusText;
 
@@ -58,11 +59,13 @@ public class MainActivity extends AppCompatActivity {
 
     private ImageButton microphoneButton;
     private SpeechToTextEngine speechToTextEngine;
+    private TextToSpeechEngine textToSpeechEngine;
 
     private View voiceListeningContainer;
     private ImageView voiceListeningIcon;
     private TextView voiceListeningText;
     private TextView voiceListeningSubtext;
+    private int speakingMessagePosition = -1;
 
     private AnimatorSet voicePulseAnimator;
 
@@ -160,15 +163,14 @@ public class MainActivity extends AppCompatActivity {
 
                     isListening = true;
 
-                    microphoneButton.setContentDescription(
-                        "Stop listening"
-                    );
+                    microphoneButton.setContentDescription("Stop listening");
 
                     modelStatusText.setText("Listening...");
 
                     showListeningUI();
                 });
             }
+
             @Override
             public void onBeginningOfSpeech() {
 
@@ -176,9 +178,7 @@ public class MainActivity extends AppCompatActivity {
 
                     isListening = true;
 
-                    microphoneButton.setContentDescription(
-                        "Stop listening"
-                    );
+                    microphoneButton.setContentDescription("Stop listening");
 
                     voiceListeningText.setText("Listening...");
                     voiceListeningSubtext.setText("I'm listening");
@@ -196,13 +196,9 @@ public class MainActivity extends AppCompatActivity {
 
                         userInput.setText(text);
 
-                        userInput.setSelection(
-                            userInput.length()
-                        );
+                        userInput.setSelection(userInput.length());
 
-                        voiceListeningSubtext.setText(
-                            "Keep speaking..."
-                        );
+                        voiceListeningSubtext.setText("Keep speaking...");
                     }
                 });
             }
@@ -216,29 +212,19 @@ public class MainActivity extends AppCompatActivity {
 
                     hideListeningUI();
 
-                    microphoneButton.setContentDescription(
-                        "Voice input"
-                    );
+                    microphoneButton.setContentDescription("Voice input");
 
                     if (text != null && !text.trim().isEmpty()) {
 
                         userInput.setText(text);
 
-                        userInput.setSelection(
-                            userInput.length()
-                        );
+                        userInput.setSelection(userInput.length());
 
-                        modelStatusText.setText(
-                            "Ready to send"
-                        );
+                        modelStatusText.setText("Ready to send");
 
                     } else {
 
-                        modelStatusText.setText(
-                            modelReady
-                                ? "Model ready"
-                                : "No model loaded"
-                        );
+                        modelStatusText.setText(modelReady ? "Model ready" : "No model loaded");
                     }
                 });
             }
@@ -248,17 +234,11 @@ public class MainActivity extends AppCompatActivity {
 
                 runOnUiThread(() -> {
 
-                    voiceListeningText.setText(
-                        "Processing..."
-                    );
+                    voiceListeningText.setText("Processing...");
 
-                    voiceListeningSubtext.setText(
-                        "Converting speech to text"
-                    );
+                    voiceListeningSubtext.setText("Converting speech to text");
 
-                    modelStatusText.setText(
-                        "Converting speech..."
-                    );
+                    modelStatusText.setText("Converting speech...");
                 });
             }
 
@@ -271,11 +251,62 @@ public class MainActivity extends AppCompatActivity {
 
                     hideListeningUI();
 
-                    microphoneButton.setContentDescription(
-                        "Voice input"
-                    );
+                    microphoneButton.setContentDescription("Voice input");
 
                     modelStatusText.setText(error);
+
+                    Toast.makeText(MainActivity.this, error, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+
+        textToSpeechEngine = new AndroidTextToSpeechEngine(this, new AndroidTextToSpeechEngine.Listener() {
+
+            @Override
+            public void onReady() {
+                runOnUiThread(() -> modelStatusText.setText(modelReady ? "Model ready" : "No model loaded"));
+            }
+
+            @Override
+            public void onStart() {
+                runOnUiThread(() -> modelStatusText.setText("Speaking..."));
+            }
+
+            @Override
+            public void onDone() {
+
+                runOnUiThread(() -> {
+
+                    speakingMessagePosition = -1;
+
+                    if (messageAdapter != null) {
+
+                        messageAdapter.clearSpeakingPosition();
+                    }
+
+                    modelStatusText.setText(
+                        modelReady
+                            ? "Model ready"
+                            : "No model loaded"
+                    );
+                });
+            }
+
+            @Override
+            public void onError(String error) {
+
+                runOnUiThread(() -> {
+
+                    speakingMessagePosition = -1;
+
+                    if (messageAdapter != null) {
+
+                        messageAdapter.clearSpeakingPosition();
+                    }
+
+                    modelStatusText.setText(
+                        error
+                    );
 
                     Toast.makeText(
                         MainActivity.this,
@@ -318,6 +349,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void bindViews() {
 
+
         modelNameText = findViewById(R.id.modelNameText);
 
         modelStatusText = findViewById(R.id.modelStatusText);
@@ -348,17 +380,13 @@ public class MainActivity extends AppCompatActivity {
 
         historyContainer = findViewById(R.id.historyContainer);
 
-        voiceListeningContainer =
-            findViewById(R.id.voiceListeningContainer);
+        voiceListeningContainer = findViewById(R.id.voiceListeningContainer);
 
-        voiceListeningIcon =
-            findViewById(R.id.voiceListeningIcon);
+        voiceListeningIcon = findViewById(R.id.voiceListeningIcon);
 
-        voiceListeningText =
-            findViewById(R.id.voiceListeningText);
+        voiceListeningText = findViewById(R.id.voiceListeningText);
 
-        voiceListeningSubtext =
-            findViewById(R.id.voiceListeningSubtext);
+        voiceListeningSubtext = findViewById(R.id.voiceListeningSubtext);
     }
 
     // =============================================================
@@ -413,6 +441,11 @@ public class MainActivity extends AppCompatActivity {
         messagesRecyclerView.setItemAnimator(null);
 
         messageAdapter = new MessageAdapter();
+
+        messageAdapter.setOnSpeakClickListener((text, position) -> {
+
+            handleSpeakMessage(text, position);
+        });
 
         messagesRecyclerView.setAdapter(messageAdapter);
 
@@ -1078,9 +1111,7 @@ public class MainActivity extends AppCompatActivity {
 
             hideListeningUI();
 
-            microphoneButton.setContentDescription(
-                "Voice input"
-            );
+            microphoneButton.setContentDescription("Voice input");
         }
 
         showChat();
@@ -1407,46 +1438,27 @@ public class MainActivity extends AppCompatActivity {
 
         if (speechToTextEngine == null) {
 
-            modelStatusText.setText(
-                "Speech recognition unavailable"
-            );
+            modelStatusText.setText("Speech recognition unavailable");
 
             return;
         }
 
-        if (ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) != PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
 
-            ActivityCompat.requestPermissions(
-                this,
-                new String[]{
-                    Manifest.permission.RECORD_AUDIO
-                },
-                RECORD_AUDIO_REQUEST_CODE
-            );
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_AUDIO_REQUEST_CODE);
 
             return;
         }
 
         isListening = true;
 
-        microphoneButton.setContentDescription(
-            "Stop listening"
-        );
+        microphoneButton.setContentDescription("Stop listening");
 
-        modelStatusText.setText(
-            "Starting voice input..."
-        );
+        modelStatusText.setText("Starting voice input...");
 
-        voiceListeningText.setText(
-            "Starting..."
-        );
+        voiceListeningText.setText("Starting...");
 
-        voiceListeningSubtext.setText(
-            "Preparing microphone"
-        );
+        voiceListeningSubtext.setText("Preparing microphone");
 
         showListeningUI();
 
@@ -1464,15 +1476,9 @@ public class MainActivity extends AppCompatActivity {
 
         hideListeningUI();
 
-        microphoneButton.setContentDescription(
-            "Voice input"
-        );
+        microphoneButton.setContentDescription("Voice input");
 
-        modelStatusText.setText(
-            modelReady
-                ? "Model ready"
-                : "No model loaded"
-        );
+        modelStatusText.setText(modelReady ? "Model ready" : "No model loaded");
     }
 
     // =============================================================
@@ -1508,17 +1514,20 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
 
-        /*
-         * Cancel voice recognition first.
-         * This prevents the SpeechRecognizer from
-         * continuing to use the Activity after it is destroyed.
-         */
+        hideListeningUI();
 
         if (speechToTextEngine != null) {
 
             speechToTextEngine.cancelListening();
 
             speechToTextEngine.destroy();
+        }
+
+        if (textToSpeechEngine != null) {
+
+            textToSpeechEngine.stop();
+
+            textToSpeechEngine.destroy();
         }
 
         if (llmManager != null) {
@@ -1543,51 +1552,33 @@ public class MainActivity extends AppCompatActivity {
             voicePulseAnimator.cancel();
         }
 
-        ObjectAnimator scaleX = ObjectAnimator.ofFloat(
-            voiceListeningIcon,
-            View.SCALE_X,
-            1.0f,
-            1.18f,
-            1.0f
-        );
+        ObjectAnimator scaleX = ObjectAnimator.ofFloat(voiceListeningIcon, View.SCALE_X, 1.0f, 1.18f, 1.0f);
 
-        ObjectAnimator scaleY = ObjectAnimator.ofFloat(
-            voiceListeningIcon,
-            View.SCALE_Y,
-            1.0f,
-            1.18f,
-            1.0f
-        );
+        ObjectAnimator scaleY = ObjectAnimator.ofFloat(voiceListeningIcon, View.SCALE_Y, 1.0f, 1.18f, 1.0f);
 
         scaleX.setDuration(900);
         scaleY.setDuration(900);
 
         voicePulseAnimator = new AnimatorSet();
 
-        voicePulseAnimator.playTogether(
-            scaleX,
-            scaleY
-        );
+        voicePulseAnimator.playTogether(scaleX, scaleY);
 
-        voicePulseAnimator.setInterpolator(
-            new AccelerateDecelerateInterpolator()
-        );
+        voicePulseAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
 
-        voicePulseAnimator.addListener(
-            new AnimatorListenerAdapter() {
+        voicePulseAnimator.addListener(new AnimatorListenerAdapter() {
 
-                @Override
-                public void onAnimationEnd(Animator animation) {
+            @Override
+            public void onAnimationEnd(Animator animation) {
 
-                    if (isListening) {
-                        voicePulseAnimator.start();
-                    }
+                if (isListening) {
+                    voicePulseAnimator.start();
                 }
             }
-        );
+        });
 
         voicePulseAnimator.start();
     }
+
     private void hideListeningUI() {
 
         if (voicePulseAnimator != null) {
@@ -1601,5 +1592,52 @@ public class MainActivity extends AppCompatActivity {
         voiceListeningIcon.setScaleY(1.0f);
 
         voiceListeningContainer.setVisibility(View.GONE);
+    }
+    // =============================================================
+// TEXT TO SPEECH
+// =============================================================
+
+    private void handleSpeakMessage(String text, int position) {
+
+        if (textToSpeechEngine == null) {
+            return;
+        }
+
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+
+        /*
+         * Same message is already speaking.
+         * Tapping it again means STOP.
+         */
+        if (speakingMessagePosition == position && textToSpeechEngine.isSpeaking()) {
+
+            textToSpeechEngine.stop();
+
+            speakingMessagePosition = -1;
+
+            messageAdapter.clearSpeakingPosition();
+
+            modelStatusText.setText(modelReady ? "Model ready" : "No model loaded");
+
+            return;
+        }
+
+        /*
+         * Stop whatever response was previously speaking.
+         */
+        textToSpeechEngine.stop();
+
+        /*
+         * Remember the new response.
+         */
+        speakingMessagePosition = position;
+
+        messageAdapter.setSpeakingPosition(position);
+
+        modelStatusText.setText("Speaking...");
+
+        textToSpeechEngine.speak(text.trim());
     }
 }
