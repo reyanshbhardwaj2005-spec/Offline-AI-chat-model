@@ -118,9 +118,9 @@ class LlmManager(context: Context) {
     // ========================================================================
 
     fun loadModel(
-        modelPath: String, callback: LoadCallback
+        modelPath: String,
+        callback: LoadCallback
     ) {
-
         scope.launch {
 
             try {
@@ -132,22 +132,40 @@ class LlmManager(context: Context) {
                 engineMutex.withLock {
 
                     /*
-                     * Loading the model creates a fresh native
-                     * llama context.
+                     * Load the model.
                      */
                     engine.loadModel(modelPath)
 
                     /*
-                     * Restore the most recently used conversation.
+                     * IMPORTANT:
+                     *
+                     * If a conversation has already been selected,
+                     * KEEP IT.
+                     *
+                     * Only choose the most recent conversation when
+                     * there is no active conversation yet.
                      */
-                    val conversation = memoryManager.getOrCreateCurrentConversation()
+                    val conversation =
+                        if (currentConversationId != -1L) {
+
+                            memoryManager.getConversation(
+                                currentConversationId
+                            ) ?: memoryManager.getOrCreateCurrentConversation()
+
+                        } else {
+
+                            memoryManager.getOrCreateCurrentConversation()
+                        }
 
                     currentConversationId = conversation.id
 
                     modelLoaded = true
 
                     /*
-                     * Rebuild the LLM context from Room.
+                     * Native llama.cpp currently contains a fresh
+                     * context because the model was just loaded.
+                     *
+                     * Rebuild it ONLY from this conversation.
                      */
                     rebuildConversationContext()
                 }
@@ -209,19 +227,8 @@ class LlmManager(context: Context) {
 
                     return@launch
                 }
-
                 generationStopped = false
 
-                /*
-                 * Save user message in the correct conversation.
-                 */
-                memoryManager.saveMessage(
-                    conversationId = conversationId, role = "user", content = message
-                )
-
-                /*
-                 * Tell the UI that generation has started.
-                 */
                 withMain {
                     callback.onToken(
                         THINKING_SIGNAL
@@ -235,14 +242,32 @@ class LlmManager(context: Context) {
                 engineMutex.withLock {
 
                     /*
-                     * Make sure the user has not switched chats
-                     * before generation starts.
+                     * Verify that this conversation is still active.
                      */
-                    if (conversationId != currentConversationId || generationStopped) {
+                    if (
+                        conversationId != currentConversationId ||
+                        generationStopped
+                    ) {
                         return@withLock
                     }
 
-                    engine.sendMessage(message).collect { token ->
+                    /*
+                     * Save the user message only after we have exclusive
+                     * ownership of the native engine.
+                     */
+                    memoryManager.saveMessage(
+                        conversationId = conversationId,
+                        role = "user",
+                        content = message
+                    )
+
+                    /*
+                     * Generate using the native context belonging to this
+                     * conversation.
+                     */
+                    engine.sendMessage(
+                        message
+                    ).collect { token ->
 
                         if (generationStopped || conversationId != currentConversationId) {
                             return@collect
@@ -551,7 +576,21 @@ class LlmManager(context: Context) {
 
             try {
 
-                val conversation = memoryManager.getOrCreateCurrentConversation()
+                /*
+                 * If a conversation has already been selected,
+                 * don't overwrite it.
+                 */
+                val conversation =
+                    if (currentConversationId != -1L) {
+
+                        memoryManager.getConversation(
+                            currentConversationId
+                        ) ?: memoryManager.getOrCreateCurrentConversation()
+
+                    } else {
+
+                        memoryManager.getOrCreateCurrentConversation()
+                    }
 
                 currentConversationId = conversation.id
 
