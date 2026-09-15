@@ -2,6 +2,10 @@
 #include <jni.h>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
+#include <vector>
+#include <sstream>
+#include <string>
 #include <string>
 #include <unistd.h>
 #include <sampling.h>
@@ -10,6 +14,8 @@
 #include "chat.h"
 #include "common.h"
 #include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 
 template<class T>
 static std::string join(const std::vector<T> &values, const std::string &delim) {
@@ -40,6 +46,51 @@ static llama_context *g_context;
 static llama_batch g_batch;
 static common_chat_templates_ptr g_chat_templates;
 static common_sampler *g_sampler;
+static mtmd_context *g_mtmd_context = nullptr;
+
+
+// --------------------------------------------------------------------------
+// Chat roles and state
+// --------------------------------------------------------------------------
+
+constexpr const char *ROLE_SYSTEM = "system";
+constexpr const char *ROLE_USER = "user";
+constexpr const char *ROLE_ASSISTANT = "assistant";
+
+static std::vector<common_chat_msg> chat_msgs;
+static llama_pos system_prompt_position = 0;
+static llama_pos current_position = 0;
+
+// --------------------------------------------------------------------------
+// Generation state
+// --------------------------------------------------------------------------
+
+static llama_pos stop_generation_position = 0;
+static std::string cached_token_chars;
+static std::ostringstream assistant_ss;
+
+// --------------------------------------------------------------------------
+// Forward declarations
+// --------------------------------------------------------------------------
+
+static void reset_long_term_states(const bool clear_kv_cache = true);
+static void shift_context();
+static std::string chat_add_and_format(
+        const std::string &role,
+        const std::string &content);
+static void reset_short_term_states();
+static int decode_tokens_in_batches(
+        llama_context *context,
+        llama_batch &batch,
+        const llama_tokens &tokens,
+        const llama_pos start_pos,
+        const bool compute_last_logit = false);
+static bool is_valid_utf8(const char *string);
+static llama_context *init_context(
+        llama_model *model,
+        const int n_ctx = DEFAULT_CONTEXT_SIZE);
+static common_sampler *new_sampler(float temp);
+static std::string get_backend();
 
 
 /**
@@ -127,11 +178,85 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_load(
 
 
 /**
+ * Initialize MTMD multimodal context using a model projector (mmproj).
+ *
+ * The text model must already be loaded into g_model. The mmproj GGUF
+ * belongs to the same vision model family as the loaded text model.
+ */
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativeInitMultimodal(
+        JNIEnv *env,
+        jobject /*unused*/,
+        jstring jmmproj_path) {
+
+    if (g_model == nullptr) {
+        LOGe("%s: Cannot initialize MTMD because model is not loaded", __func__);
+        return JNI_FALSE;
+    }
+
+    if (jmmproj_path == nullptr) {
+        LOGe("%s: mmproj path is null", __func__);
+        return JNI_FALSE;
+    }
+
+    const char *mmproj_path =
+            env->GetStringUTFChars(jmmproj_path, nullptr);
+
+    if (mmproj_path == nullptr) {
+        LOGe("%s: Failed to read mmproj path", __func__);
+        return JNI_FALSE;
+    }
+
+    LOGi(
+            "%s: Loading multimodal projector from:\n%s",
+            __func__,
+            mmproj_path
+    );
+
+    if (g_mtmd_context != nullptr) {
+        LOGi("%s: Freeing previous MTMD context", __func__);
+        mtmd_free(g_mtmd_context);
+        g_mtmd_context = nullptr;
+    }
+
+    mtmd_context_params params = mtmd_context_params_default();
+
+    // Conservative CPU configuration for the Galaxy A14.
+    params.use_gpu = false;
+    params.n_threads = 2;
+    params.print_timings = false;
+
+    g_mtmd_context = mtmd_init_from_file(
+            mmproj_path,
+            g_model,
+            params
+    );
+
+    env->ReleaseStringUTFChars(jmmproj_path, mmproj_path);
+
+    if (g_mtmd_context == nullptr) {
+        LOGe("%s: mtmd_init_from_file() failed", __func__);
+        return JNI_FALSE;
+    }
+
+    LOGi(
+            "%s: MTMD initialized successfully. Vision=%s, Audio=%s",
+            __func__,
+            mtmd_support_vision(g_mtmd_context) ? "YES" : "NO",
+            mtmd_support_audio(g_mtmd_context) ? "YES" : "NO"
+    );
+
+    return JNI_TRUE;
+}
+
+
+/**
  * Initialize llama context
  */
 static llama_context *init_context(
         llama_model *model,
-        const int n_ctx = DEFAULT_CONTEXT_SIZE) {
+        const int n_ctx) {
 
     if (!model) {
 
@@ -257,6 +382,203 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_prepare(
     return 0;
 }
 
+
+/**
+ * Process an image + text prompt through libmtmd and prepare the
+ * native llama context for normal token generation.
+ */
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_processImagePrompt(
+        JNIEnv *env,
+        jobject /*unused*/,
+        jstring jimage_path,
+        jstring juser_prompt,
+        jint n_predict) {
+
+    reset_short_term_states();
+
+    if (g_model == nullptr || g_context == nullptr) {
+        LOGe("%s: llama model/context is not ready", __func__);
+        return 1;
+    }
+
+    if (g_mtmd_context == nullptr) {
+        LOGe("%s: multimodal context is not initialized", __func__);
+        return 2;
+    }
+
+    if (!mtmd_support_vision(g_mtmd_context)) {
+        LOGe("%s: loaded mmproj does not support vision", __func__);
+        return 3;
+    }
+
+    if (jimage_path == nullptr || juser_prompt == nullptr) {
+        LOGe("%s: image path or prompt is null", __func__);
+        return 4;
+    }
+
+    const char *image_path = env->GetStringUTFChars(jimage_path, nullptr);
+    const char *user_prompt = env->GetStringUTFChars(juser_prompt, nullptr);
+
+    if (image_path == nullptr || user_prompt == nullptr) {
+        if (image_path != nullptr) {
+            env->ReleaseStringUTFChars(jimage_path, image_path);
+        }
+        if (user_prompt != nullptr) {
+            env->ReleaseStringUTFChars(juser_prompt, user_prompt);
+        }
+        LOGe("%s: failed to read Java strings", __func__);
+        return 5;
+    }
+
+    std::string image_path_copy(image_path);
+    std::string multimodal_content(user_prompt);
+
+    env->ReleaseStringUTFChars(jimage_path, image_path);
+    env->ReleaseStringUTFChars(juser_prompt, user_prompt);
+
+    const std::string media_marker =
+            mtmd_default_marker();
+    if (multimodal_content.find(media_marker) == std::string::npos) {
+        multimodal_content = media_marker + multimodal_content;
+    }
+
+    LOGi("%s: image=%s", __func__, image_path_copy.c_str());
+    LOGi("%s: prompt=%s", __func__, multimodal_content.c_str());
+
+    // Format the message using the same chat template used by text chat.
+    // Qwen2.5-VL's template produces the required <|im_start|> user/assistant
+    // structure while libmtmd replaces <__media__> with the image chunks.
+    const bool has_chat_template =
+            common_chat_templates_was_explicit(
+                    g_chat_templates.get()
+            );
+
+    std::string formatted_prompt = multimodal_content;
+
+    if (has_chat_template) {
+        formatted_prompt = chat_add_and_format(
+                ROLE_USER,
+                multimodal_content
+        );
+    } else {
+        common_chat_msg msg;
+        msg.role = ROLE_USER;
+        msg.content = multimodal_content;
+        chat_msgs.push_back(std::move(msg));
+    }
+
+    mtmd_helper_bitmap_wrapper bitmap_wrapper =
+            mtmd_helper_bitmap_init_from_file(
+                    g_mtmd_context,
+                    image_path_copy.c_str(),
+                    false,
+                    mtmd_helper_init_opt_default()
+            );
+
+    if (bitmap_wrapper.video_ctx != nullptr) {
+        mtmd_helper_video_free(bitmap_wrapper.video_ctx);
+        bitmap_wrapper.video_ctx = nullptr;
+    }
+
+    if (bitmap_wrapper.bitmap == nullptr) {
+        LOGe("%s: failed to decode image: %s", __func__, image_path_copy.c_str());
+        return 6;
+    }
+
+    const mtmd_bitmap *bitmap = bitmap_wrapper.bitmap;
+
+    mtmd_input_text input_text{};
+    input_text.text = formatted_prompt.data();
+    input_text.text_len = formatted_prompt.size();
+    input_text.add_special = has_chat_template;
+    input_text.parse_special = has_chat_template;
+
+    mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+    if (chunks == nullptr) {
+        mtmd_bitmap_free(bitmap_wrapper.bitmap);
+        return 7;
+    }
+
+    const mtmd_bitmap *bitmaps[] = { bitmap };
+
+    const int32_t tokenize_result = mtmd_tokenize(
+            g_mtmd_context,
+            chunks,
+            &input_text,
+            bitmaps,
+            1
+    );
+
+    // Tokenization/preprocessing has copied what it needs from the bitmap.
+    mtmd_bitmap_free(bitmap_wrapper.bitmap);
+    bitmap_wrapper.bitmap = nullptr;
+
+    if (tokenize_result != 0) {
+        LOGe(
+                "%s: mtmd_tokenize failed with %d",
+                __func__,
+                tokenize_result
+        );
+        mtmd_input_chunks_free(chunks);
+        return 8;
+    }
+
+    const llama_pos required_positions = mtmd_helper_get_n_pos(chunks);
+    if (required_positions <= 0) {
+        LOGe("%s: multimodal prompt produced no positions", __func__);
+        mtmd_input_chunks_free(chunks);
+        return 9;
+    }
+
+    if (current_position + required_positions >=
+        DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM) {
+        LOGe(
+                "%s: multimodal prompt does not fit in current context: current=%d required=%d",
+                __func__,
+                current_position,
+                required_positions
+        );
+        mtmd_input_chunks_free(chunks);
+        return 10;
+    }
+
+    llama_pos new_position = current_position;
+
+    const int32_t eval_result = mtmd_helper_eval_chunks(
+            g_mtmd_context,
+            g_context,
+            chunks,
+            current_position,
+            0,
+            BATCH_SIZE,
+            true,
+            &new_position
+    );
+
+    mtmd_input_chunks_free(chunks);
+
+    if (eval_result != 0) {
+        LOGe(
+                "%s: mtmd_helper_eval_chunks failed with %d",
+                __func__,
+                eval_result
+        );
+        return 11;
+    }
+
+    current_position = new_position;
+    stop_generation_position = current_position + std::max(1, (int)n_predict);
+
+    LOGi(
+            "%s: multimodal prompt evaluated successfully; new position=%d",
+            __func__,
+            current_position
+    );
+
+    return 0;
+}
 
 /**
  * Get backend information
@@ -607,21 +929,6 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_benchModel(
  * - chat management
  * - position tracking
  */
-constexpr const char *ROLE_SYSTEM =
-        "system";
-
-constexpr const char *ROLE_USER =
-        "user";
-
-constexpr const char *ROLE_ASSISTANT =
-        "assistant";
-
-static std::vector<common_chat_msg> chat_msgs;
-
-static llama_pos system_prompt_position;
-
-static llama_pos current_position;
-
 
 /**
  * Reset long-term states.
@@ -633,7 +940,7 @@ static llama_pos current_position;
  * - llama.cpp KV cache
  */
 static void reset_long_term_states(
-        const bool clear_kv_cache = true) {
+        const bool clear_kv_cache) {
 
     chat_msgs.clear();
 
@@ -737,13 +1044,6 @@ static std::string chat_add_and_format(
  * - token chars caching
  * - current assistant message
  */
-static llama_pos stop_generation_position;
-
-static std::string cached_token_chars;
-
-static std::ostringstream assistant_ss;
-
-
 static void reset_short_term_states() {
 
     stop_generation_position = 0;
@@ -759,6 +1059,7 @@ static void reset_short_term_states() {
 }
 
 
+
 /**
  * Decode tokens in batches
  */
@@ -767,7 +1068,7 @@ static int decode_tokens_in_batches(
         llama_batch &batch,
         const llama_tokens &tokens,
         const llama_pos start_pos,
-        const bool compute_last_logit = false) {
+        const bool compute_last_logit) {
 
     LOGd(
             "%s: Decode %d tokens starting at position %d",
@@ -1423,6 +1724,12 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_unload(
 
     reset_short_term_states();
 
+    // Free MTMD before freeing the llama model it references.
+    if (g_mtmd_context != nullptr) {
+        mtmd_free(g_mtmd_context);
+        g_mtmd_context = nullptr;
+    }
+
     // Free resources
     common_sampler_free(
             g_sampler
@@ -1460,3 +1767,4 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_shutdown(
 
     llama_backend_free();
 }
+
