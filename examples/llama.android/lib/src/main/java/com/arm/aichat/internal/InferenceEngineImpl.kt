@@ -118,6 +118,9 @@ internal class InferenceEngineImpl private constructor(
     @FastNative
     private external fun shutdown()
 
+    @FastNative
+    private external fun nativeResetConversation()
+
     private val _state =
         MutableStateFlow<InferenceEngine.State>(InferenceEngine.State.Uninitialized)
     override val state: StateFlow<InferenceEngine.State> = _state.asStateFlow()
@@ -220,9 +223,23 @@ internal class InferenceEngineImpl private constructor(
             _state.value = InferenceEngine.State.ModelReady
         }
 
-    override suspend fun resetConversation() {
-        TODO("Not yet implemented")
-    }
+    override suspend fun resetConversation() =
+        withContext(llamaDispatcher) {
+            check(_state.value is InferenceEngine.State.ModelReady) {
+                "Cannot reset conversation in ${_state.value.javaClass.simpleName}!"
+            }
+
+            Log.i(TAG, "Resetting native conversation...")
+
+            _cancelGeneration = true
+            _readyForSystemPrompt = true
+
+            nativeResetConversation()
+
+            _state.value = InferenceEngine.State.ModelReady
+
+            Log.i(TAG, "Native conversation reset successfully.")
+        }
 
     /**
      * Send plain text user prompt to LLM, which starts generating tokens in a [Flow]

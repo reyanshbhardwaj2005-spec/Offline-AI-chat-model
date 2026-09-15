@@ -13,7 +13,7 @@ interface InferenceEngine {
 
     suspend fun setSystemPrompt(systemPrompt: String)
 
-    suspend fun resetConversation()
+    suspend fun resetConversation(): Int
 
     fun sendUserPrompt(
         message: String,
