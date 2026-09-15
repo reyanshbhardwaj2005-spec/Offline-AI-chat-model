@@ -16,95 +16,87 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.List;
 
-public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageViewHolder> {
-
-    // =============================================================
-    // SPEAK CALLBACK
-    // =============================================================
+public class MessageAdapter
+    extends RecyclerView.Adapter<MessageAdapter.MessageViewHolder> {
 
     public interface OnSpeakClickListener {
-
-        void onSpeakClicked(
-            String text,
-            int position
-        );
+        void onSpeakClicked(String text, int position);
     }
 
-    private final List<Message> messages =
-        new ArrayList<>();
+    private final List<Message> messages = new ArrayList<>();
 
     private boolean thinking = false;
 
     private OnSpeakClickListener speakClickListener;
 
-    /*
+    /**
      * Position of the assistant message currently being spoken.
      *
-     * -1 means nothing is currently being spoken.
+     * -1 means nothing is speaking.
      */
     private int speakingPosition = -1;
 
-    // =============================================================
-    // LISTENER
-    // =============================================================
 
-    public void setOnSpeakClickListener(
-        OnSpeakClickListener listener
-    ) {
+    // ---------------------------------------------------------
+    // Listener
+    // ---------------------------------------------------------
 
+    public void setOnSpeakClickListener(OnSpeakClickListener listener) {
         this.speakClickListener = listener;
     }
 
-    // =============================================================
-    // CREATE VIEW HOLDER
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // RecyclerView
+    // ---------------------------------------------------------
 
     @NonNull
     @Override
     public MessageViewHolder onCreateViewHolder(
         @NonNull ViewGroup parent,
-        int viewType
-    ) {
+        int viewType) {
 
-        View view =
-            LayoutInflater.from(parent.getContext())
-                .inflate(
-                    R.layout.item_message,
-                    parent,
-                    false
-                );
+        View view = LayoutInflater
+            .from(parent.getContext())
+            .inflate(
+                R.layout.item_message,
+                parent,
+                false
+            );
 
         return new MessageViewHolder(view);
     }
 
-    // =============================================================
-    // BIND
-    // =============================================================
 
     @Override
     public void onBindViewHolder(
         @NonNull MessageViewHolder holder,
-        int position
-    ) {
+        int position) {
 
-        Message message =
-            messages.get(position);
+        Message message = messages.get(position);
 
-        holder.messageText.setText(
-            message.getContent()
-        );
+        String content = message.getContent();
 
-        LinearLayout.LayoutParams params =
-            (LinearLayout.LayoutParams)
-                holder.messageText.getLayoutParams();
+        if (content == null) {
+            content = "";
+        }
 
-        // =========================================================
+        holder.messageText.setText(content);
+
+
+        // -----------------------------------------------------
         // USER MESSAGE
-        // =========================================================
+        // -----------------------------------------------------
 
         if (message.getType() == Message.USER) {
 
+            LinearLayout.LayoutParams params =
+                (LinearLayout.LayoutParams)
+                    holder.messageText.getLayoutParams();
+
             params.gravity = Gravity.END;
+
+            holder.messageText.setLayoutParams(params);
 
             holder.messageText.setBackground(
                 createBubble(
@@ -112,112 +104,145 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
                 )
             );
 
-            holder.messageText.setTextColor(
-                Color.WHITE
-            );
+            holder.messageText.setTextColor(Color.WHITE);
 
-            /*
-             * User messages don't need TTS.
-             */
-            holder.speakButton.setVisibility(
-                View.GONE
-            );
 
-            holder.speakButton.setOnClickListener(
-                null
-            );
+            // User messages should never have TTS.
 
+            holder.speakButton.setVisibility(View.GONE);
+
+            holder.speakButton.setOnClickListener(null);
+
+            return;
         }
 
-        // =========================================================
+
+        // -----------------------------------------------------
         // ASSISTANT MESSAGE
-        // =========================================================
+        // -----------------------------------------------------
 
-        else {
+        LinearLayout.LayoutParams params =
+            (LinearLayout.LayoutParams)
+                holder.messageText.getLayoutParams();
 
-            params.gravity = Gravity.START;
+        params.gravity = Gravity.START;
 
-            holder.messageText.setBackground(
-                createBubble(
-                    Color.rgb(235, 235, 235)
-                )
-            );
+        holder.messageText.setLayoutParams(params);
 
-            holder.messageText.setTextColor(
-                Color.BLACK
-            );
+        holder.messageText.setBackground(
+            createBubble(
+                Color.rgb(235, 235, 235)
+            )
+        );
 
-            /*
-             * Show TTS button only when there is actual content.
-             *
-             * During "Thinking..." or an empty streaming message,
-             * the button stays hidden.
-             */
-            String content =
-                message.getContent();
+        holder.messageText.setTextColor(Color.BLACK);
 
-            if (content != null
-                && !content.trim().isEmpty()
-                && !content.equals("Thinking...")) {
 
-                holder.speakButton.setVisibility(
-                    View.VISIBLE
-                );
+        // -----------------------------------------------------
+        // THINKING STATE
+        // -----------------------------------------------------
 
-                updateSpeakButton(
-                    holder,
-                    position
-                );
+        if (thinking
+            && position == messages.size() - 1) {
 
-                holder.speakButton.setOnClickListener(
-                    v -> {
+            holder.speakButton.setVisibility(View.GONE);
 
-                        if (speakClickListener != null) {
+            holder.speakButton.setOnClickListener(null);
 
-                            speakClickListener.onSpeakClicked(
-                                message.getContent(),
-                                position
-                            );
-                        }
-                    }
-                );
-
-            } else {
-
-                holder.speakButton.setVisibility(
-                    View.GONE
-                );
-
-                holder.speakButton.setOnClickListener(
-                    null
-                );
-            }
+            return;
         }
 
-        holder.messageText.setLayoutParams(
-            params
-        );
+
+        // -----------------------------------------------------
+        // ASSISTANT TTS BUTTON
+        // -----------------------------------------------------
+
+        if (!content.trim().isEmpty()
+            && !content.equals("Thinking...")) {
+
+            holder.speakButton.setVisibility(View.VISIBLE);
+
+            updateSpeakButton(
+                holder,
+                position
+            );
+
+
+            /*
+             * IMPORTANT:
+             *
+             * Do NOT capture the 'position' supplied to
+             * onBindViewHolder().
+             *
+             * RecyclerView positions can change.
+             *
+             * Instead, retrieve the current position when
+             * the button is actually clicked.
+             */
+            holder.speakButton.setOnClickListener(v -> {
+
+                int adapterPosition =
+                    holder.getBindingAdapterPosition();
+
+                if (adapterPosition
+                    == RecyclerView.NO_POSITION) {
+
+                    return;
+                }
+
+                if (adapterPosition < 0
+                    || adapterPosition >= messages.size()) {
+
+                    return;
+                }
+
+                Message currentMessage =
+                    messages.get(adapterPosition);
+
+                String currentContent =
+                    currentMessage.getContent();
+
+                if (currentContent == null
+                    || currentContent.trim().isEmpty()) {
+
+                    return;
+                }
+
+                if (speakClickListener != null) {
+
+                    speakClickListener.onSpeakClicked(
+                        currentContent,
+                        adapterPosition
+                    );
+                }
+            });
+
+        } else {
+
+            holder.speakButton.setVisibility(View.GONE);
+
+            holder.speakButton.setOnClickListener(null);
+        }
     }
+
 
     @Override
     public int getItemCount() {
         return messages.size();
     }
 
-    // =============================================================
-    // UPDATE SPEAK BUTTON
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // TTS Button UI
+    // ---------------------------------------------------------
 
     private void updateSpeakButton(
         MessageViewHolder holder,
-        int position
-    ) {
+        int position) {
 
         if (position == speakingPosition) {
 
-            holder.speakButton.setText(
-                "⏹ Stop"
-            );
+            holder.speakButton.setText("⏹ Stop");
 
             holder.speakButton.setContentDescription(
                 "Stop speaking"
@@ -225,9 +250,7 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
 
         } else {
 
-            holder.speakButton.setText(
-                "🔊 Speak"
-            );
+            holder.speakButton.setText("🔊 Speak");
 
             holder.speakButton.setContentDescription(
                 "Speak response"
@@ -235,33 +258,33 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         }
     }
 
-    // =============================================================
-    // SET SPEAKING POSITION
-    // =============================================================
 
-    public void setSpeakingPosition(
-        int position
-    ) {
+    // ---------------------------------------------------------
+    // Speaking Position
+    // ---------------------------------------------------------
 
-        int oldPosition =
-            speakingPosition;
+    public void setSpeakingPosition(int position) {
 
-        speakingPosition =
-            position;
+        int oldPosition = speakingPosition;
+
+        speakingPosition = position;
+
 
         /*
-         * Refresh only the affected buttons.
-         *
-         * We don't use notifyDataSetChanged() because that would
-         * unnecessarily refresh the entire conversation.
+         * Refresh the old speaking message so its button
+         * changes from Stop → Speak.
          */
-
         if (oldPosition >= 0
             && oldPosition < messages.size()) {
 
             notifyItemChanged(oldPosition);
         }
 
+
+        /*
+         * Refresh the new speaking message so its button
+         * changes from Speak → Stop.
+         */
         if (position >= 0
             && position < messages.size()
             && position != oldPosition) {
@@ -270,9 +293,6 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         }
     }
 
-    // =============================================================
-    // CLEAR SPEAKING
-    // =============================================================
 
     public void clearSpeakingPosition() {
 
@@ -280,8 +300,7 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
             return;
         }
 
-        int oldPosition =
-            speakingPosition;
+        int oldPosition = speakingPosition;
 
         speakingPosition = -1;
 
@@ -292,13 +311,16 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         }
     }
 
-    // =============================================================
-    // ADD MESSAGE
-    // =============================================================
 
-    public void addMessage(
-        Message message
-    ) {
+    // ---------------------------------------------------------
+    // Add Message
+    // ---------------------------------------------------------
+
+    public void addMessage(Message message) {
+
+        if (message == null) {
+            return;
+        }
 
         messages.add(message);
 
@@ -307,14 +329,14 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         );
     }
 
-    // =============================================================
-    // UPDATE LAST MESSAGE
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // Update Last Message
+    // ---------------------------------------------------------
 
     public void updateLastMessage(
         String content,
-        RecyclerView recyclerView
-    ) {
+        RecyclerView recyclerView) {
 
         if (messages.isEmpty()) {
             return;
@@ -323,41 +345,49 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         int lastPosition =
             messages.size() - 1;
 
-        messages.get(lastPosition)
-            .setContent(content);
+        Message lastMessage =
+            messages.get(lastPosition);
+
+        lastMessage.setContent(
+            content == null ? "" : content
+        );
+
 
         /*
-         * Get currently visible ViewHolder.
+         * During streaming, update the visible TextView
+         * directly.
+         *
+         * This avoids forcing RecyclerView to completely
+         * rebind the item for every token.
          */
-        RecyclerView.ViewHolder holder =
+        RecyclerView.ViewHolder viewHolder =
             recyclerView.findViewHolderForAdapterPosition(
                 lastPosition
             );
 
-        /*
-         * Update only the TextView.
-         *
-         * We deliberately don't call notifyItemChanged()
-         * during streaming because that caused the UI jumping.
-         */
-        if (holder instanceof MessageViewHolder) {
+        if (viewHolder instanceof MessageViewHolder) {
 
             MessageViewHolder messageHolder =
-                (MessageViewHolder) holder;
+                (MessageViewHolder) viewHolder;
 
             messageHolder.messageText.setText(
-                content
+                lastMessage.getContent()
             );
 
+
             /*
-             * The Speak button should appear once actual
-             * assistant content starts arriving.
+             * If the response has become a real assistant
+             * response, make sure the TTS button is visible
+             * immediately.
              */
-            if (messages.get(lastPosition).getType()
-                == Message.ASSISTANT
-                && content != null
-                && !content.trim().isEmpty()
-                && !content.equals("Thinking...")) {
+            if (lastMessage.getType() == Message.ASSISTANT
+                && !thinking
+                && lastMessage.getContent() != null
+                && !lastMessage.getContent()
+                .trim()
+                .isEmpty()
+                && !lastMessage.getContent()
+                .equals("Thinking...")) {
 
                 messageHolder.speakButton.setVisibility(
                     View.VISIBLE
@@ -368,15 +398,50 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
                     lastPosition
                 );
 
+                /*
+                 * Use the ViewHolder's current adapter
+                 * position at click time.
+                 */
                 messageHolder.speakButton.setOnClickListener(
                     v -> {
+
+                        int adapterPosition =
+                            messageHolder
+                                .getBindingAdapterPosition();
+
+                        if (adapterPosition
+                            == RecyclerView.NO_POSITION) {
+
+                            return;
+                        }
+
+                        if (adapterPosition < 0
+                            || adapterPosition >= messages.size()) {
+
+                            return;
+                        }
+
+                        Message currentMessage =
+                            messages.get(
+                                adapterPosition
+                            );
+
+                        String currentContent =
+                            currentMessage.getContent();
+
+                        if (currentContent == null
+                            || currentContent
+                            .trim()
+                            .isEmpty()) {
+
+                            return;
+                        }
 
                         if (speakClickListener != null) {
 
                             speakClickListener.onSpeakClicked(
-                                messages.get(lastPosition)
-                                    .getContent(),
-                                lastPosition
+                                currentContent,
+                                adapterPosition
                             );
                         }
                     }
@@ -387,20 +452,51 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
                 messageHolder.speakButton.setVisibility(
                     View.GONE
                 );
+
+                messageHolder.speakButton.setOnClickListener(
+                    null
+                );
             }
+
+        } else {
+
+            /*
+             * IMPORTANT FIX:
+             *
+             * The ViewHolder may not exist yet.
+             *
+             * Instead of waiting for scrolling to cause a
+             * rebind, explicitly ask RecyclerView to rebind
+             * the item on the next UI pass.
+             */
+            recyclerView.post(() -> {
+
+                if (lastPosition >= 0
+                    && lastPosition < messages.size()) {
+
+                    notifyItemChanged(
+                        lastPosition
+                    );
+                }
+            });
         }
     }
 
-    // =============================================================
-    // THINKING
-    // =============================================================
 
-    public void setThinking(
-        boolean thinking,
-        RecyclerView recyclerView
-    ) {
+    // ---------------------------------------------------------
+    // Finish Last Message
+    // ---------------------------------------------------------
 
-        this.thinking = thinking;
+    /**
+     * Call this when the assistant response has completely
+     * finished streaming.
+     *
+     * This guarantees that RecyclerView performs a proper
+     * final bind and therefore the Speak button is correctly
+     * displayed.
+     */
+    public void finishLastMessage(
+        RecyclerView recyclerView) {
 
         if (messages.isEmpty()) {
             return;
@@ -409,48 +505,73 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         int lastPosition =
             messages.size() - 1;
 
+        recyclerView.post(() -> {
+
+            if (lastPosition >= 0
+                && lastPosition < messages.size()) {
+
+                notifyItemChanged(
+                    lastPosition
+                );
+            }
+        });
+    }
+
+
+    // ---------------------------------------------------------
+    // Thinking
+    // ---------------------------------------------------------
+
+    public void setThinking(
+        boolean thinking,
+        RecyclerView recyclerView) {
+
+        this.thinking = thinking;
+
+        if (messages.isEmpty()) {
+            return;
+        }
+
+        int lastPosition = messages.size() - 1;
+
+        /*
+         * When entering thinking state, change the message text.
+         */
         if (thinking) {
 
             messages.get(lastPosition)
                 .setContent("Thinking...");
         }
 
-        RecyclerView.ViewHolder holder =
-            recyclerView.findViewHolderForAdapterPosition(
-                lastPosition
-            );
+        /*
+         * IMPORTANT:
+         *
+         * Do not manually hide the Speak button here when
+         * thinking becomes false.
+         *
+         * When thinking finishes, RecyclerView must perform a
+         * complete bind so onBindViewHolder() can decide whether
+         * the Speak button should be visible.
+         */
+        recyclerView.post(() -> {
 
-        if (holder instanceof MessageViewHolder) {
+            if (lastPosition >= 0
+                && lastPosition < messages.size()) {
 
-            MessageViewHolder messageHolder =
-                (MessageViewHolder) holder;
-
-            messageHolder.messageText.setText(
-                messages.get(lastPosition)
-                    .getContent()
-            );
-
-            /*
-             * Hide TTS while thinking.
-             */
-            messageHolder.speakButton.setVisibility(
-                View.GONE
-            );
-        }
+                notifyItemChanged(lastPosition);
+            }
+        });
     }
 
-    // =============================================================
-    // IS THINKING
-    // =============================================================
 
     public boolean isThinking() {
-
         return thinking;
     }
 
-    // =============================================================
-    // LAST MESSAGE
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // Get Last Message
+    // ---------------------------------------------------------
 
     public String getLastMessage() {
 
@@ -458,32 +579,38 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
             return "";
         }
 
-        return messages
-            .get(messages.size() - 1)
-            .getContent();
+        String content =
+            messages.get(
+                messages.size() - 1
+            ).getContent();
+
+        return content == null ? "" : content;
     }
 
-    // =============================================================
-    // CREATE BUBBLE
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // Bubble
+    // ---------------------------------------------------------
 
     private GradientDrawable createBubble(
-        int color
-    ) {
+        int color) {
 
         GradientDrawable drawable =
             new GradientDrawable();
 
         drawable.setColor(color);
 
-        drawable.setCornerRadius(32);
+        drawable.setCornerRadius(
+            24f
+        );
 
         return drawable;
     }
 
-    // =============================================================
-    // VIEW HOLDER
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // ViewHolder
+    // ---------------------------------------------------------
 
     static class MessageViewHolder
         extends RecyclerView.ViewHolder {
@@ -492,9 +619,9 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
 
         Button speakButton;
 
+
         MessageViewHolder(
-            @NonNull View itemView
-        ) {
+            @NonNull View itemView) {
 
             super(itemView);
 
@@ -510,9 +637,10 @@ public class MessageAdapter extends RecyclerView.Adapter<MessageAdapter.MessageV
         }
     }
 
-    // =============================================================
-    // CLEAR
-    // =============================================================
+
+    // ---------------------------------------------------------
+    // Clear Messages
+    // ---------------------------------------------------------
 
     public void clearMessages() {
 
