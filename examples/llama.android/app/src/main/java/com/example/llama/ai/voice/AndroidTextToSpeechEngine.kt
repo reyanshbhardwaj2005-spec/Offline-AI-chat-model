@@ -6,10 +6,8 @@ import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
 
 class AndroidTextToSpeechEngine(
-    context: Context,
-    private val listener: Listener
+    context: Context, private val listener: Listener
 ) : TextToSpeechEngine {
-
     interface Listener {
         fun onReady()
         fun onStart()
@@ -18,7 +16,6 @@ class AndroidTextToSpeechEngine(
     }
 
     private val appContext = context.applicationContext
-
     private var textToSpeech: TextToSpeech? = null
     private var initialized = false
 
@@ -26,44 +23,37 @@ class AndroidTextToSpeechEngine(
         textToSpeech = TextToSpeech(
             appContext
         ) { status ->
-
             if (status == TextToSpeech.SUCCESS) {
-
                 textToSpeech?.language = Locale.getDefault()
 
                 textToSpeech?.setSpeechRate(1.0f)
                 textToSpeech?.setPitch(1.0f)
 
-                textToSpeech?.setOnUtteranceProgressListener(
-                    object : UtteranceProgressListener() {
-
-                        override fun onStart(
-                            utteranceId: String?
-                        ) {
-                            listener.onStart()
-                        }
-
-                        override fun onDone(
-                            utteranceId: String?
-                        ) {
-                            listener.onDone()
-                        }
-
-                        override fun onError(
-                            utteranceId: String?
-                        ) {
-                            listener.onError(
-                                "Text-to-speech error"
-                            )
-                        }
+                textToSpeech?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(
+                        utteranceId: String?
+                    ) {
+                        listener.onStart()
                     }
-                )
+
+                    override fun onDone(
+                        utteranceId: String?
+                    ) {
+                        listener.onDone()
+                    }
+
+                    override fun onError(
+                        utteranceId: String?
+                    ) {
+                        listener.onError(
+                            "Text-to-speech error"
+                        )
+                    }
+                })
 
                 initialized = true
                 listener.onReady()
-
             } else {
-
                 initialized = false
 
                 listener.onError(
@@ -74,7 +64,6 @@ class AndroidTextToSpeechEngine(
     }
 
     override fun speak(text: String) {
-
         if (!initialized) {
             listener.onError(
                 "Text-to-speech is not ready"
@@ -87,12 +76,8 @@ class AndroidTextToSpeechEngine(
         }
 
         textToSpeech?.stop()
-
         val result = textToSpeech?.speak(
-            text.trim(),
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "assistant_response"
+            text.trim(), TextToSpeech.QUEUE_FLUSH, null, "assistant_response"
         )
 
         if (result == TextToSpeech.ERROR) {
@@ -111,7 +96,6 @@ class AndroidTextToSpeechEngine(
     }
 
     override fun destroy() {
-
         textToSpeech?.stop()
         textToSpeech?.shutdown()
 

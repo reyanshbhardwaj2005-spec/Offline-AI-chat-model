@@ -11,22 +11,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 class LlmManager(context: Context) {
-
     private val appContext = context.applicationContext
-
     private val engine = LlamaChatEngine(appContext)
 
     /*
      * MemoryManager owns the Room database.
      */
     private val memoryManager = MemoryManager(appContext)
-
     private val contextBuilder = ContextBuilder(
         memoryManager = memoryManager
     )
@@ -53,89 +49,66 @@ class LlmManager(context: Context) {
     @Volatile
     private var modelLoaded = false
 
+    @Volatile
+    private var multimodalLoaded = false
     private var summaryJob: Job? = null
 
     companion object {
-
         private const val SUMMARY_TRIGGER = 20
-
         private const val SUMMARY_MESSAGE_COUNT = 8
-
         private const val RECENT_MESSAGE_COUNT = 12
-
         private const val SUMMARY_MAX_TOKENS = 300
-
         private const val UI_UPDATE_INTERVAL_MS = 50L
-
         const val THINKING_SIGNAL = "__THINKING__"
     }
 
     // ========================================================================
     // CALLBACKS
     // ========================================================================
-
     interface LoadCallback {
-
         fun onSuccess()
-
         fun onError(exception: Exception)
     }
 
     interface ChatCallback {
-
         fun onToken(text: String)
-
         fun onComplete(fullResponse: String)
-
         fun onStopped()
-
         fun onError(exception: Exception)
     }
 
     interface ConversationCallback {
-
         fun onSuccess(conversation: ConversationEntity)
-
         fun onError(exception: Exception)
     }
 
     interface ConversationsCallback {
-
         fun onSuccess(conversations: List<ConversationEntity>)
-
         fun onError(exception: Exception)
     }
 
     interface MessagesCallback {
-
         fun onSuccess(messages: List<MessageEntity>)
-
         fun onError(exception: Exception)
     }
 
     // ========================================================================
     // LOAD MODEL
     // ========================================================================
-
     fun loadModel(
-        modelPath: String,
-        callback: LoadCallback
+        modelPath: String, callback: LoadCallback
     ) {
         scope.launch {
-
             try {
-
                 withMain {
                     // Loading state is represented by MainActivity itself.
                 }
 
                 engineMutex.withLock {
-
                     /*
                      * Load the model.
                      */
                     engine.loadModel(modelPath)
-
                     /*
                      * IMPORTANT:
                      *
@@ -145,22 +118,17 @@ class LlmManager(context: Context) {
                      * Only choose the most recent conversation when
                      * there is no active conversation yet.
                      */
-                    val conversation =
-                        if (currentConversationId != -1L) {
-
-                            memoryManager.getConversation(
-                                currentConversationId
-                            ) ?: memoryManager.getOrCreateCurrentConversation()
-
-                        } else {
-
-                            memoryManager.getOrCreateCurrentConversation()
-                        }
+                    val conversation = if (currentConversationId != -1L) {
+                        memoryManager.getConversation(
+                            currentConversationId
+                        ) ?: memoryManager.getOrCreateCurrentConversation()
+                    } else {
+                        memoryManager.getOrCreateCurrentConversation()
+                    }
 
                     currentConversationId = conversation.id
 
                     modelLoaded = true
-
                     /*
                      * Native llama.cpp currently contains a fresh
                      * context because the model was just loaded.
@@ -173,9 +141,7 @@ class LlmManager(context: Context) {
                 withMain {
                     callback.onSuccess()
                 }
-
             } catch (e: Exception) {
-
                 modelLoaded = false
 
                 withMain {
@@ -186,103 +152,58 @@ class LlmManager(context: Context) {
     }
 
     // ========================================================================
-    // SEND MESSAGE
-    // ========================================================================
-
+// SEND MESSAGE
+// ========================================================================
     fun sendMessage(
         message: String, callback: ChatCallback
     ) {
-
         scope.launch {
-
             try {
-
                 if (!modelLoaded) {
-
                     withMain {
                         callback.onError(
-                            IllegalStateException(
-                                "Model is not loaded"
-                            )
+                            IllegalStateException("Model is not loaded")
                         )
                     }
-
                     return@launch
                 }
-
-                /*
-                 * Capture the conversation before starting.
-                 */
                 val conversationId = currentConversationId
 
                 if (conversationId == -1L) {
-
                     withMain {
                         callback.onError(
-                            IllegalStateException(
-                                "No conversation is selected"
-                            )
+                            IllegalStateException("No conversation is selected")
                         )
                     }
-
                     return@launch
                 }
+
                 generationStopped = false
 
                 withMain {
-                    callback.onToken(
-                        THINKING_SIGNAL
-                    )
+                    callback.onToken(THINKING_SIGNAL)
                 }
-
                 val responseBuilder = StringBuilder()
-
                 var lastUiUpdate = System.currentTimeMillis()
 
                 engineMutex.withLock {
-
-                    /*
-                     * Verify that this conversation is still active.
-                     */
-                    if (
-                        conversationId != currentConversationId ||
-                        generationStopped
-                    ) {
+                    if (conversationId != currentConversationId || generationStopped) {
                         return@withLock
                     }
 
-                    /*
-                     * Save the user message only after we have exclusive
-                     * ownership of the native engine.
-                     */
                     memoryManager.saveMessage(
-                        conversationId = conversationId,
-                        role = "user",
-                        content = message
+                        conversationId = conversationId, role = "user", content = message
                     )
 
-                    /*
-                     * Generate using the native context belonging to this
-                     * conversation.
-                     */
-                    engine.sendMessage(
-                        message
-                    ).collect { token ->
-
+                    engine.sendMessage(message).collect { token ->
                         if (generationStopped || conversationId != currentConversationId) {
                             return@collect
                         }
 
                         responseBuilder.append(token)
-
                         val now = System.currentTimeMillis()
 
-                        /*
-                         * Do not update the Android UI for
-                         * every individual native token.
-                         */
                         if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
-
                             val text = responseBuilder.toString()
 
                             withMain {
@@ -294,32 +215,14 @@ class LlmManager(context: Context) {
                     }
                 }
 
-                /*
-                 * Conversation was switched or generation
-                 * was stopped.
-                 */
                 if (generationStopped || conversationId != currentConversationId) {
-
                     withMain {
                         callback.onStopped()
                     }
-
                     return@launch
                 }
-
                 val finalResponse = responseBuilder.toString()
 
-                /*
-                 * Make sure the final UI text is displayed.
-                 */
-                withMain {
-                    callback.onToken(finalResponse)
-                }
-
-                /*
-                 * Save assistant response into the SAME
-                 * conversation.
-                 */
                 memoryManager.saveMessage(
                     conversationId = conversationId, role = "assistant", content = finalResponse
                 )
@@ -328,23 +231,128 @@ class LlmManager(context: Context) {
                     callback.onComplete(finalResponse)
                 }
 
-                /*
-                 * Summary runs after normal generation.
-                 */
-                updateSummaryIfNecessary(
-                    conversationId
-                )
-
+                updateSummaryIfNecessary(conversationId)
             } catch (e: Exception) {
-
                 if (generationStopped) {
-
                     withMain {
                         callback.onStopped()
                     }
-
                 } else {
+                    withMain {
+                        callback.onError(e)
+                    }
+                }
+            }
+        }
+    }
 
+    fun sendImageMessage(
+        imagePath: String, message: String, callback: ChatCallback
+    ) {
+        scope.launch {
+            try {
+                if (!modelLoaded) {
+                    withMain {
+                        callback.onError(
+                            IllegalStateException(
+                                "Model is not loaded"
+                            )
+                        )
+                    }
+                    return@launch
+                }
+
+                if (!multimodalLoaded) {
+                    withMain {
+                        callback.onError(
+                            IllegalStateException(
+                                "Vision model is not initialized"
+                            )
+                        )
+                    }
+                    return@launch
+                }
+                val conversationId = currentConversationId
+
+                if (conversationId == -1L) {
+                    withMain {
+                        callback.onError(
+                            IllegalStateException(
+                                "No conversation is selected"
+                            )
+                        )
+                    }
+                    return@launch
+                }
+
+                generationStopped = false
+
+                withMain {
+                    callback.onToken(THINKING_SIGNAL)
+                }
+                val responseBuilder = StringBuilder()
+                var lastUiUpdate = System.currentTimeMillis()
+
+                engineMutex.withLock {
+                    if (conversationId != currentConversationId || generationStopped) {
+                        return@withLock
+                    }
+
+                    memoryManager.saveMessage(
+                        conversationId = conversationId, role = "user", content = message
+                    )
+
+                    engine.sendImageMessage(
+                        imagePath = imagePath, message = message
+                    ).collect { token ->
+                        if (generationStopped || conversationId != currentConversationId) {
+                            return@collect
+                        }
+
+                        responseBuilder.append(token)
+                        val now = System.currentTimeMillis()
+
+                        if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
+                            val text = responseBuilder.toString()
+
+                            withMain {
+                                callback.onToken(text)
+                            }
+
+                            lastUiUpdate = now
+                        }
+                    }
+                }
+
+                if (generationStopped || conversationId != currentConversationId) {
+                    withMain {
+                        callback.onStopped()
+                    }
+                    return@launch
+                }
+                val finalResponse = responseBuilder.toString()
+
+                withMain {
+                    callback.onToken(finalResponse)
+                }
+
+                memoryManager.saveMessage(
+                    conversationId = conversationId, role = "assistant", content = finalResponse
+                )
+
+                withMain {
+                    callback.onComplete(finalResponse)
+                }
+
+                updateSummaryIfNecessary(
+                    conversationId
+                )
+            } catch (e: Exception) {
+                if (generationStopped) {
+                    withMain {
+                        callback.onStopped()
+                    }
+                } else {
                     withMain {
                         callback.onError(e)
                     }
@@ -356,9 +364,7 @@ class LlmManager(context: Context) {
     // ========================================================================
     // STOP GENERATION
     // ========================================================================
-
     fun stopGeneration() {
-
         generationStopped = true
 
         engine.stopGeneration()
@@ -367,56 +373,43 @@ class LlmManager(context: Context) {
     // ========================================================================
     // CREATE NEW CONVERSATION
     // ========================================================================
-
     fun createNewConversation(
         callback: ConversationCallback
     ) {
-
         scope.launch {
-
             try {
-
                 generationStopped = true
 
                 engine.stopGeneration()
-
                 /*
                  * Create the new Room conversation first.
                  */
                 val conversation = memoryManager.createConversation()
 
                 if (modelLoaded) {
-
                     engineMutex.withLock {
-
                         /*
                          * Clear the native llama.cpp conversation
                          * while keeping the model loaded.
                          */
                         engine.resetConversation()
-
                         /*
                          * Select the new conversation.
                          */
                         currentConversationId = conversation.id
-
                         /*
                          * Build a fresh context.
                          */
                         rebuildConversationContext()
                     }
-
                 } else {
-
                     currentConversationId = conversation.id
                 }
 
                 withMain {
                     callback.onSuccess(conversation)
                 }
-
             } catch (e: Exception) {
-
                 withMain {
                     callback.onError(e)
                 }
@@ -427,19 +420,14 @@ class LlmManager(context: Context) {
     // ========================================================================
     // SELECT EXISTING CONVERSATION
     // ========================================================================
-
     fun selectConversation(
         conversationId: Long, callback: ConversationCallback
     ) {
-
         scope.launch {
-
             try {
-
                 generationStopped = true
 
                 engine.stopGeneration()
-
                 /*
                  * Make sure the conversation actually exists.
                  */
@@ -450,9 +438,7 @@ class LlmManager(context: Context) {
                 )
 
                 if (modelLoaded) {
-
                     engineMutex.withLock {
-
                         /*
                          * IMPORTANT:
                          *
@@ -460,30 +446,24 @@ class LlmManager(context: Context) {
                          * the native llama.cpp context.
                          */
                         engine.resetConversation()
-
                         /*
                          * Change the active Room conversation.
                          */
                         currentConversationId = conversation.id
-
                         /*
                          * Rebuild native context using ONLY
                          * this conversation's data.
                          */
                         rebuildConversationContext()
                     }
-
                 } else {
-
                     currentConversationId = conversation.id
                 }
 
                 withMain {
                     callback.onSuccess(conversation)
                 }
-
             } catch (e: Exception) {
-
                 withMain {
                     callback.onError(e)
                 }
@@ -494,15 +474,11 @@ class LlmManager(context: Context) {
     // ========================================================================
     // DELETE CONVERSATION
     // ========================================================================
-
     fun deleteConversation(
         conversationId: Long, callback: ConversationCallback
     ) {
-
         scope.launch {
-
             try {
-
                 generationStopped = true
 
                 engine.stopGeneration()
@@ -510,37 +486,29 @@ class LlmManager(context: Context) {
                 memoryManager.deleteConversation(
                     conversationId
                 )
-
                 /*
                  * If the deleted conversation was active,
                  * choose/create another conversation.
                  */
                 if (currentConversationId == conversationId) {
-
                     val newConversation = memoryManager.getOrCreateCurrentConversation()
 
                     if (modelLoaded) {
-
                         engineMutex.withLock {
-
                             engine.resetConversation()
 
                             currentConversationId = newConversation.id
 
                             rebuildConversationContext()
                         }
-
                     } else {
-
                         currentConversationId = newConversation.id
                     }
 
                     withMain {
                         callback.onSuccess(newConversation)
                     }
-
                 } else {
-
                     withMain {
                         callback.onSuccess(
                             memoryManager.getConversation(
@@ -554,9 +522,7 @@ class LlmManager(context: Context) {
                         )
                     }
                 }
-
             } catch (e: Exception) {
-
                 withMain {
                     callback.onError(e)
                 }
@@ -567,39 +533,29 @@ class LlmManager(context: Context) {
     // ========================================================================
     // CURRENT CONVERSATION
     // ========================================================================
-
     fun initializeConversation(
         callback: ConversationCallback
     ) {
-
         scope.launch {
-
             try {
-
                 /*
                  * If a conversation has already been selected,
                  * don't overwrite it.
                  */
-                val conversation =
-                    if (currentConversationId != -1L) {
-
-                        memoryManager.getConversation(
-                            currentConversationId
-                        ) ?: memoryManager.getOrCreateCurrentConversation()
-
-                    } else {
-
-                        memoryManager.getOrCreateCurrentConversation()
-                    }
+                val conversation = if (currentConversationId != -1L) {
+                    memoryManager.getConversation(
+                        currentConversationId
+                    ) ?: memoryManager.getOrCreateCurrentConversation()
+                } else {
+                    memoryManager.getOrCreateCurrentConversation()
+                }
 
                 currentConversationId = conversation.id
 
                 withMain {
                     callback.onSuccess(conversation)
                 }
-
             } catch (e: Exception) {
-
                 withMain {
                     callback.onError(e)
                 }
@@ -608,18 +564,14 @@ class LlmManager(context: Context) {
     }
 
     fun getCurrentConversationId(): Long {
-
         return currentConversationId
     }
 
     fun getCurrentConversation(
         callback: (ConversationEntity?) -> Unit
     ) {
-
         scope.launch {
-
             try {
-
                 val conversation = memoryManager.getConversation(
                     currentConversationId
                 )
@@ -627,9 +579,7 @@ class LlmManager(context: Context) {
                 withMain {
                     callback(conversation)
                 }
-
             } catch (_: Exception) {
-
                 withMain {
                     callback(null)
                 }
@@ -640,26 +590,20 @@ class LlmManager(context: Context) {
     // ========================================================================
     // ALL CONVERSATIONS
     // ========================================================================
-
     /*
      * Name matches MainActivity.
      */
     fun getConversations(
         callback: ConversationsCallback
     ) {
-
         scope.launch {
-
             try {
-
                 val conversations = memoryManager.getAllConversations()
 
                 withMain {
                     callback.onSuccess(conversations)
                 }
-
             } catch (e: Exception) {
-
                 withMain {
                     callback.onError(e)
                 }
@@ -673,25 +617,20 @@ class LlmManager(context: Context) {
     fun getAllConversations(
         callback: ConversationsCallback
     ) {
-
         getConversations(callback)
     }
 
     // ========================================================================
     // GET CONVERSATION MESSAGES
     // ========================================================================
-
     /*
      * Name matches MainActivity.
      */
     fun getConversationMessages(
         conversationId: Long, callback: MessagesCallback
     ) {
-
         scope.launch {
-
             try {
-
                 val messages = memoryManager.getAllMessages(
                     conversationId
                 )
@@ -699,9 +638,7 @@ class LlmManager(context: Context) {
                 withMain {
                     callback.onSuccess(messages)
                 }
-
             } catch (e: Exception) {
-
                 withMain {
                     callback.onError(e)
                 }
@@ -715,7 +652,6 @@ class LlmManager(context: Context) {
     fun getMessages(
         conversationId: Long, callback: MessagesCallback
     ) {
-
         getConversationMessages(
             conversationId, callback
         )
@@ -724,13 +660,10 @@ class LlmManager(context: Context) {
     // ========================================================================
     // REBUILD CONTEXT
     // ========================================================================
-
     private suspend fun rebuildConversationContext() {
-
         if (currentConversationId == -1L) {
             return
         }
-
         /*
          * ContextBuilder combines:
          *
@@ -740,12 +673,9 @@ class LlmManager(context: Context) {
          */
         val prompt = contextBuilder.buildContext(
             conversationId = currentConversationId,
-
             currentMessage = "",
-
             recentMessageLimit = RECENT_MESSAGE_COUNT
         )
-
         /*
          * A new conversation may have:
          *
@@ -757,19 +687,15 @@ class LlmManager(context: Context) {
          * prompt. llama.cpp requires a non-empty system prompt.
          */
         val finalPrompt = if (prompt.isBlank()) {
-
             """
             You are a helpful offline AI assistant.
             Answer the user's questions clearly and accurately.
             Be concise unless the user asks for more detail.
             Do not invent facts.
             """.trimIndent()
-
         } else {
-
             prompt
         }
-
         /*
          * Send the final system prompt to the LLM.
          */
@@ -779,17 +705,13 @@ class LlmManager(context: Context) {
     // ========================================================================
     // SUMMARY
     // ========================================================================
-
     private fun updateSummaryIfNecessary(
         conversationId: Long
     ) {
-
         summaryJob?.cancel()
 
         summaryJob = scope.launch {
-
             try {
-
                 val count = memoryManager.getMessageCount(
                     conversationId
                 )
@@ -801,7 +723,6 @@ class LlmManager(context: Context) {
                 generateConversationSummary(
                     conversationId
                 )
-
             } catch (_: Exception) {/*
                      * Summary failure must never
                      * break normal chat.
@@ -813,7 +734,6 @@ class LlmManager(context: Context) {
     private suspend fun generateConversationSummary(
         conversationId: Long
     ) {
-
         /*
          * Do not summarize a conversation that is no longer
          * the active conversation.
@@ -821,7 +741,6 @@ class LlmManager(context: Context) {
         if (conversationId != currentConversationId) {
             return
         }
-
         val messages = memoryManager.getRecentMessages(
             conversationId, SUMMARY_MESSAGE_COUNT
         )
@@ -829,7 +748,6 @@ class LlmManager(context: Context) {
         if (messages.isEmpty()) {
             return
         }
-
         val promptBuilder = StringBuilder()
 
         promptBuilder.append(
@@ -847,15 +765,12 @@ class LlmManager(context: Context) {
         )
 
         for (message in messages) {
-
             promptBuilder.append("\n")
             promptBuilder.append(message.role)
             promptBuilder.append(": ")
             promptBuilder.append(message.content)
         }
-
         val summaryBuilder = StringBuilder()
-
         /*
          * Summary inference uses the same native engine.
          *
@@ -864,16 +779,13 @@ class LlmManager(context: Context) {
          * RESTORE the actual active conversation.
          */
         engineMutex.withLock {
-
             if (conversationId != currentConversationId) {
                 return@withLock
             }
-
             /*
              * Clear current chat context.
              */
             engine.resetConversation()
-
             /*
              * Give the summary generator a minimal
              * system prompt.
@@ -885,19 +797,15 @@ class LlmManager(context: Context) {
             engine.sendMessage(
                 promptBuilder.toString(), predictLength = SUMMARY_MAX_TOKENS
             ).collect { token ->
-
                 summaryBuilder.append(token)
             }
-
             val summary = summaryBuilder.toString().trim()
 
             if (summary.isNotEmpty()) {
-
                 memoryManager.saveConversationSummary(
                     conversationId = conversationId, summary = summary
                 )
             }
-
             /*
              * VERY IMPORTANT:
              *
@@ -908,7 +816,6 @@ class LlmManager(context: Context) {
              * releasing the mutex.
              */
             if (conversationId == currentConversationId) {
-
                 engine.resetConversation()
 
                 rebuildConversationContext()
@@ -919,17 +826,13 @@ class LlmManager(context: Context) {
     // ========================================================================
     // CLEANUP
     // ========================================================================
-
     fun cleanUp() {
-
         generationStopped = true
 
         engine.stopGeneration()
 
         scope.launch {
-
             engineMutex.withLock {
-
                 engine.unload()
 
                 modelLoaded = false
@@ -940,9 +843,7 @@ class LlmManager(context: Context) {
     // ========================================================================
     // DESTROY
     // ========================================================================
-
     fun destroy() {
-
         generationStopped = true
 
         engine.stopGeneration()
@@ -950,9 +851,7 @@ class LlmManager(context: Context) {
         summaryJob?.cancel()
 
         scope.launch {
-
             engineMutex.withLock {
-
                 engine.destroy()
 
                 modelLoaded = false
@@ -965,12 +864,52 @@ class LlmManager(context: Context) {
     // ========================================================================
     // MAIN THREAD CALLBACK HELPER
     // ========================================================================
-
     private suspend fun withMain(
         block: suspend () -> Unit
     ) {
         kotlinx.coroutines.withContext(Dispatchers.Main) {
             block()
+        }
+    }
+
+    fun loadMultimodalModel(
+        mmprojPath: String, callback: LoadCallback
+    ) {
+        scope.launch {
+            try {
+                if (!modelLoaded) {
+                    withMain {
+                        callback.onError(
+                            IllegalStateException(
+                                "Load the text model first"
+                            )
+                        )
+                    }
+                    return@launch
+                }
+
+                engineMutex.withLock {
+                    val success = engine.initMultimodal(mmprojPath)
+
+                    if (!success) {
+                        throw IllegalStateException(
+                            "Failed to initialize multimodal model"
+                        )
+                    }
+
+                    multimodalLoaded = true
+                }
+
+                withMain {
+                    callback.onSuccess()
+                }
+            } catch (e: Exception) {
+                multimodalLoaded = false
+
+                withMain {
+                    callback.onError(e)
+                }
+            }
         }
     }
 }

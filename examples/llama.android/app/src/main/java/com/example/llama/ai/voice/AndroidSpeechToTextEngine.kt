@@ -12,7 +12,6 @@ class AndroidSpeechToTextEngine(
     context: Context,
     private val listener: Listener
 ) : SpeechToTextEngine {
-
     interface Listener {
         fun onReady()
         fun onBeginningOfSpeech()
@@ -23,14 +22,11 @@ class AndroidSpeechToTextEngine(
     }
 
     private val appContext = context.applicationContext
-
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
-
     private val recognizerIntent = Intent(
         RecognizerIntent.ACTION_RECOGNIZE_SPEECH
     ).apply {
-
         putExtra(
             RecognizerIntent.EXTRA_LANGUAGE_MODEL,
             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
@@ -53,7 +49,6 @@ class AndroidSpeechToTextEngine(
     }
 
     override fun startListening() {
-
         if (isListening) {
             return
         }
@@ -64,7 +59,6 @@ class AndroidSpeechToTextEngine(
             )
             return
         }
-
         // Important:
         // Create a NEW recognizer for every session.
         destroyRecognizer()
@@ -79,11 +73,8 @@ class AndroidSpeechToTextEngine(
         isListening = true
 
         try {
-
             speechRecognizer?.startListening(recognizerIntent)
-
         } catch (e: Exception) {
-
             isListening = false
             destroyRecognizer()
 
@@ -94,7 +85,6 @@ class AndroidSpeechToTextEngine(
     }
 
     override fun stopListening() {
-
         if (!isListening) {
             return
         }
@@ -106,7 +96,6 @@ class AndroidSpeechToTextEngine(
     }
 
     override fun cancelListening() {
-
         try {
             speechRecognizer?.cancel()
         } catch (_: Exception) {
@@ -117,15 +106,12 @@ class AndroidSpeechToTextEngine(
     }
 
     override fun destroy() {
-
         isListening = false
         destroyRecognizer()
     }
 
     private fun createRecognitionListener(): RecognitionListener {
-
         return object : RecognitionListener {
-
             override fun onReadyForSpeech(
                 params: Bundle?
             ) {
@@ -147,11 +133,9 @@ class AndroidSpeechToTextEngine(
             }
 
             override fun onEndOfSpeech() {
-
                 isListening = false
 
                 listener.onEndOfSpeech()
-
                 // Don't destroy immediately here.
                 // onResults/onError will finish the session.
             }
@@ -159,7 +143,6 @@ class AndroidSpeechToTextEngine(
             override fun onError(
                 error: Int
             ) {
-
                 isListening = false
 
                 listener.onError(
@@ -172,14 +155,11 @@ class AndroidSpeechToTextEngine(
             override fun onResults(
                 results: Bundle?
             ) {
-
                 isListening = false
-
                 val matches =
                     results?.getStringArrayList(
                         SpeechRecognizer.RESULTS_RECOGNITION
                     )
-
                 val text =
                     matches
                         ?.firstOrNull()
@@ -196,12 +176,10 @@ class AndroidSpeechToTextEngine(
             override fun onPartialResults(
                 partialResults: Bundle?
             ) {
-
                 val matches =
                     partialResults?.getStringArrayList(
                         SpeechRecognizer.RESULTS_RECOGNITION
                     )
-
                 val text =
                     matches
                         ?.firstOrNull()
@@ -222,7 +200,6 @@ class AndroidSpeechToTextEngine(
     }
 
     private fun destroyRecognizer() {
-
         try {
             speechRecognizer?.setRecognitionListener(null)
             speechRecognizer?.destroy()
@@ -235,9 +212,7 @@ class AndroidSpeechToTextEngine(
     private fun getErrorMessage(
         error: Int
     ): String {
-
         return when (error) {
-
             SpeechRecognizer.ERROR_AUDIO ->
                 "Audio recording error"
 

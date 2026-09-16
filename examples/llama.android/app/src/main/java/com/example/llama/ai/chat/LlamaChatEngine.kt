@@ -25,25 +25,17 @@ class LlamaChatEngine(context: Context) : ChatEngine {
         inferenceEngine.resetConversation()
     }
 
-    override fun sendMessage(
-        message: String,
-        predictLength: Int
-    ): Flow<String> {
+    override fun sendMessage(message: String, predictLength: Int): Flow<String> {
         return inferenceEngine.sendUserPrompt(
-            message = message,
-            predictLength = predictLength
+            message = message, predictLength = predictLength
         )
     }
 
     override fun sendImageMessage(
-        imagePath: String,
-        message: String,
-        predictLength: Int
+        imagePath: String, message: String, predictLength: Int
     ): Flow<String> {
         return inferenceEngine.sendImagePrompt(
-            imagePath = imagePath,
-            message = message,
-            predictLength = predictLength
+            imagePath = imagePath, message = message, predictLength = predictLength
         )
     }
 
