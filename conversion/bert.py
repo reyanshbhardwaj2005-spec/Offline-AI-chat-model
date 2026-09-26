@@ -44,7 +44,7 @@ class BertModel(TextModel):
         # we need this to validate the size of the token_type embeddings
         # though currently we are passing all zeros to the token_type embeddings
         # "Sequence A" or "Sequence B"
-        self.gguf_writer.add_token_type_count(self.hparams.get("type_vocab_size", 1))
+        self.gguf_writer.add_   token_type_count(self.hparams.get("type_vocab_size", 1))
 
         # convert to phantom space vocab
         def phantom(tok, toktype):

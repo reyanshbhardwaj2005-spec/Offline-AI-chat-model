@@ -9,11 +9,25 @@ interface InferenceEngine {
 
     suspend fun loadModel(pathToModel: String)
 
+    /** Load the separate GGUF embedding model used by semantic RAG. */
+    suspend fun loadEmbeddingModel(pathToModel: String)
+
+    /** Prepare the embedding model's encoder context. */
+    suspend fun prepareEmbedding()
+
+    /** Create one normalized embedding vector. */
+    suspend fun createEmbedding(text: String): FloatArray
+
+    /** Dimension reported by the loaded embedding model. */
+    suspend fun getEmbeddingDimension(): Int
+
+    /** Unload only the embedding model/context. Chat model remains loaded. */
+    suspend fun unloadEmbeddingModel()
+
     suspend fun initMultimodal(mmprojPath: String): Boolean
 
     suspend fun setSystemPrompt(systemPrompt: String)
-
-    suspend fun resetConversation(): Int
+    suspend fun resetConversation()
 
     fun sendUserPrompt(
         message: String,

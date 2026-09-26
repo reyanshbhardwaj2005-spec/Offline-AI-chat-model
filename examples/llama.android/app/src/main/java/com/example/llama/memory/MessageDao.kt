@@ -17,6 +17,9 @@ interface MessageDao {
     """)
     suspend fun getAllMessages(conversationId: Long): List<MessageEntity>
 
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getMessageById(id: Long): MessageEntity?
+
     @Query("""
         SELECT * FROM messages
         WHERE conversationId = :conversationId

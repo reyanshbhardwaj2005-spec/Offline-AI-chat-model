@@ -6,6 +6,7 @@ import com.example.llama.memory.ContextBuilder
 import com.example.llama.memory.ConversationEntity
 import com.example.llama.memory.MemoryManager
 import com.example.llama.memory.MessageEntity
+import com.example.llama.embedding.LocalEmbeddingEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,9 +21,19 @@ class LlmManager(context: Context) {
     private val engine = LlamaChatEngine(appContext)
 
     /*
-     * MemoryManager owns the Room database.
+     * Separate local E5 embedding model used by semantic RAG.
+     * Place multilingual-e5-small-Q8_0.gguf at the default path
+     * defined by LocalEmbeddingEngine before semantic memory is used.
      */
-    private val memoryManager = MemoryManager(appContext)
+    private val embeddingEngine = LocalEmbeddingEngine(appContext)
+
+    /*
+     * MemoryManager owns Room and the vector index.
+     */
+    private val memoryManager = MemoryManager(
+        context = appContext,
+        embeddingEngine = embeddingEngine
+    )
     private val contextBuilder = ContextBuilder(
         memoryManager = memoryManager
     )
@@ -191,11 +202,54 @@ class LlmManager(context: Context) {
                         return@withLock
                     }
 
+                    /*
+                     * Fast RAG path:
+                     *
+                     * Search semantic memory using the ACTUAL user query,
+                     * but DO NOT rebuild the entire llama.cpp context on
+                     * every turn.
+                     *
+                     * The previous implementation called:
+                     *   resetConversation()
+                     *   setSystemPrompt(fullContext)
+                     * for every message.
+                     *
+                     * That forced llama.cpp to re-tokenize/re-process the
+                     * system prompt and recent conversation on every turn.
+                     * On a Galaxy A14 this can be noticeably slow.
+                     *
+                     * Instead, keep the current native conversation alive
+                     * and inject only the retrieved cross-chat memory into
+                     * the current user message.
+                     */
+                    val ragPrompt = contextBuilder.buildContext(
+                        conversationId = conversationId,
+                        currentMessage = message,
+                        recentMessageLimit = 0
+                    )
+
+                    val enrichedMessage =
+                        if (ragPrompt.isBlank()) {
+                            message
+                        } else {
+                            """
+                            Relevant information from previous conversations:
+
+                            $ragPrompt
+
+                            Current user message:
+                            $message
+
+                            Use the previous information only when relevant.
+                            Do not mention this internal context unless necessary.
+                            """.trimIndent()
+                        }
+
                     memoryManager.saveMessage(
                         conversationId = conversationId, role = "user", content = message
                     )
 
-                    engine.sendMessage(message).collect { token ->
+                    engine.sendMessage(enrichedMessage).collect { token ->
                         if (generationStopped || conversationId != currentConversationId) {
                             return@collect
                         }
@@ -298,12 +352,45 @@ class LlmManager(context: Context) {
                         return@withLock
                     }
 
+                    /*
+                     * Apply the same semantic-memory/RAG flow to vision
+                     * turns. The user's text query is still the retrieval
+                     * query even though the generation also receives an image.
+                     */
+                    /*
+                     * Fast RAG path for vision messages.
+                     * Keep the native conversation alive and inject only
+                     * retrieved cross-chat memory into the current prompt.
+                     */
+                    val ragPrompt = contextBuilder.buildContext(
+                        conversationId = conversationId,
+                        currentMessage = message,
+                        recentMessageLimit = 0
+                    )
+
+                    val enrichedMessage =
+                        if (ragPrompt.isBlank()) {
+                            message
+                        } else {
+                            """
+                            Relevant information from previous conversations:
+
+                            $ragPrompt
+
+                            Current user message:
+                            $message
+
+                            Use the previous information only when relevant.
+                            Do not mention this internal context unless necessary.
+                            """.trimIndent()
+                        }
+
                     memoryManager.saveMessage(
                         conversationId = conversationId, role = "user", content = message
                     )
 
                     engine.sendImageMessage(
-                        imagePath = imagePath, message = message
+                        imagePath = imagePath, message = enrichedMessage
                     ).collect { token ->
                         if (generationStopped || conversationId != currentConversationId) {
                             return@collect

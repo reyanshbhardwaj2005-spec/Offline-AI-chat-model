@@ -39,6 +39,9 @@ interface MemoryDao {
     """)
     suspend fun searchMemories(query: String): List<MemoryEntity>
 
+    @Query("SELECT * FROM memories WHERE id = :id LIMIT 1")
+    suspend fun getMemoryById(id: Long): MemoryEntity?
+
     @Query("DELETE FROM memories")
     suspend fun deleteAll()
 }

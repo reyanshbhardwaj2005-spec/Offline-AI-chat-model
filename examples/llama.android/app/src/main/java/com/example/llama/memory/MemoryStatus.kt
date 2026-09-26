@@ -1,4 +1,7 @@
 package com.example.llama.memory
 
-class MemoryStatus {
+enum class MemoryStatus {
+    NEW,
+    UPDATED,
+    REJECTED
 }

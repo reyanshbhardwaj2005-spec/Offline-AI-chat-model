@@ -1,4 +1,6 @@
 package com.example.llama.memory
 
-class MemoryType {
+enum class MemoryType {
+    USER_MEMORY,
+    CONVERSATION_MESSAGE
 }

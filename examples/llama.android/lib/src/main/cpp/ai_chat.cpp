@@ -48,6 +48,12 @@ static common_chat_templates_ptr g_chat_templates;
 static common_sampler *g_sampler;
 static mtmd_context *g_mtmd_context = nullptr;
 
+// Separate embedding model/context. These never replace the chat model.
+static llama_model *g_embedding_model = nullptr;
+static llama_context *g_embedding_context = nullptr;
+static llama_batch g_embedding_batch{};
+static int32_t g_embedding_dimension = 0;
+
 
 // --------------------------------------------------------------------------
 // Chat roles and state
@@ -74,22 +80,30 @@ static std::ostringstream assistant_ss;
 // --------------------------------------------------------------------------
 
 static void reset_long_term_states(const bool clear_kv_cache = true);
+
 static void shift_context();
+
 static std::string chat_add_and_format(
         const std::string &role,
         const std::string &content);
+
 static void reset_short_term_states();
+
 static int decode_tokens_in_batches(
         llama_context *context,
         llama_batch &batch,
         const llama_tokens &tokens,
         const llama_pos start_pos,
         const bool compute_last_logit = false);
+
 static bool is_valid_utf8(const char *string);
+
 static llama_context *init_context(
         llama_model *model,
         const int n_ctx = DEFAULT_CONTEXT_SIZE);
+
 static common_sampler *new_sampler(float temp);
+
 static std::string get_backend();
 
 
@@ -501,7 +515,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processImagePrompt(
         return 7;
     }
 
-    const mtmd_bitmap *bitmaps[] = { bitmap };
+    const mtmd_bitmap *bitmaps[] = {bitmap};
 
     const int32_t tokenize_result = mtmd_tokenize(
             g_mtmd_context,
@@ -569,7 +583,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processImagePrompt(
     }
 
     current_position = new_position;
-    stop_generation_position = current_position + std::max(1, (int)n_predict);
+    stop_generation_position = current_position + std::max(1, (int) n_predict);
 
     LOGi(
             "%s: multimodal prompt evaluated successfully; new position=%d",
@@ -579,6 +593,298 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processImagePrompt(
 
     return 0;
 }
+
+// --------------------------------------------------------------------------
+// Offline semantic embeddings
+// --------------------------------------------------------------------------
+
+static void free_embedding_resources() {
+    if (g_embedding_batch.token != nullptr || g_embedding_batch.embd != nullptr) {
+        llama_batch_free(g_embedding_batch);
+        g_embedding_batch = {};
+    }
+
+    if (g_embedding_context != nullptr) {
+        llama_free(g_embedding_context);
+        g_embedding_context = nullptr;
+    }
+
+    if (g_embedding_model != nullptr) {
+        llama_model_free(g_embedding_model);
+        g_embedding_model = nullptr;
+    }
+
+    g_embedding_dimension = 0;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativeLoadEmbeddingModel(
+        JNIEnv *env,
+        jobject /*unused*/,
+        jstring jmodel_path) {
+
+    if (jmodel_path == nullptr) {
+        LOGe("%s: embedding model path is null", __func__);
+        return 1;
+    }
+
+    const char *model_path = env->GetStringUTFChars(jmodel_path, nullptr);
+    if (model_path == nullptr) {
+        LOGe("%s: failed to read embedding model path", __func__);
+        return 2;
+    }
+
+    free_embedding_resources();
+
+    llama_model_params model_params = llama_model_default_params();
+
+    LOGi("%s: Loading embedding model from:\n%s", __func__, model_path);
+
+    g_embedding_model = llama_model_load_from_file(
+            model_path,
+            model_params
+    );
+
+    env->ReleaseStringUTFChars(jmodel_path, model_path);
+
+    if (g_embedding_model == nullptr) {
+        LOGe("%s: llama_model_load_from_file() failed", __func__);
+        return 3;
+    }
+
+    g_embedding_dimension = llama_model_n_embd_out(g_embedding_model);
+    if (g_embedding_dimension <= 0) {
+        LOGe("%s: invalid embedding dimension: %d", __func__, g_embedding_dimension);
+        free_embedding_resources();
+        return 5;
+    }
+
+    LOGi(
+            "%s: embedding model loaded; dimension=%d, trained_ctx=%d",
+            __func__,
+            g_embedding_dimension,
+            llama_model_n_ctx_train(g_embedding_model)
+    );
+
+    return 0;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativePrepareEmbedding(
+        JNIEnv * /*env*/,
+        jobject /*unused*/) {
+
+    if (g_embedding_model == nullptr) {
+        LOGe("%s: embedding model is not loaded", __func__);
+        return 1;
+    }
+
+    if (g_embedding_batch.token != nullptr || g_embedding_batch.embd != nullptr) {
+        llama_batch_free(g_embedding_batch);
+        g_embedding_batch = {};
+    }
+
+    if (g_embedding_context != nullptr) {
+        llama_free(g_embedding_context);
+        g_embedding_context = nullptr;
+    }
+
+    const int trained_context = llama_model_n_ctx_train(g_embedding_model);
+    const uint32_t n_ctx = trained_context > 0
+                           ? (uint32_t) std::min(trained_context, 512)
+                           : 512u;
+
+    llama_context_params params = llama_context_default_params();
+    params.n_ctx = n_ctx;
+    params.n_batch = n_ctx;
+    params.n_ubatch = n_ctx;
+    params.n_seq_max = 1;
+    params.n_threads = 2;
+    params.n_threads_batch = 2;
+    params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+    params.attention_type = LLAMA_ATTENTION_TYPE_NON_CAUSAL;
+    params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    params.embeddings = true;
+
+    g_embedding_context = llama_init_from_model(
+            g_embedding_model,
+            params
+    );
+
+    if (g_embedding_context == nullptr) {
+        LOGe("%s: llama_init_from_model() failed", __func__);
+        return 2;
+    }
+
+    g_embedding_batch = llama_batch_init(
+            (int32_t) n_ctx,
+            0,
+            1
+    );
+
+    LOGi(
+            "%s: embedding context ready; n_ctx=%u, dimension=%d",
+            __func__,
+            n_ctx,
+            g_embedding_dimension
+    );
+
+    return 0;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativeGetEmbeddingDimension(
+        JNIEnv * /*env*/,
+        jobject /*unused*/) {
+    return g_embedding_dimension;
+}
+
+extern "C"
+JNIEXPORT jfloatArray JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativeCreateEmbedding(
+        JNIEnv *env,
+        jobject /*unused*/,
+        jstring jtext) {
+
+    if (g_embedding_model == nullptr || g_embedding_context == nullptr) {
+        LOGe("%s: embedding model/context is not ready", __func__);
+        return nullptr;
+    }
+
+    if (jtext == nullptr) {
+        LOGe("%s: text is null", __func__);
+        return nullptr;
+    }
+
+    const char *text = env->GetStringUTFChars(jtext, nullptr);
+    if (text == nullptr) {
+        return nullptr;
+    }
+
+    const std::string input(text);
+    env->ReleaseStringUTFChars(jtext, text);
+
+    if (input.empty()) {
+        LOGe("%s: text is empty", __func__);
+        return nullptr;
+    }
+
+    // E5 uses the encoder and mean pooling. common_tokenize handles the
+    // model-specific BOS/EOS/special-token rules for the loaded GGUF.
+    std::vector<llama_token> tokens;
+    try {
+        tokens = common_tokenize(
+                g_embedding_context,
+                input,
+                true,
+                false
+        );
+    } catch (const std::exception &e) {
+        LOGe("%s: tokenization failed: %s", __func__, e.what());
+        return nullptr;
+    }
+
+    const int32_t max_tokens = (int32_t) llama_n_ctx(g_embedding_context);
+    if ((int32_t) tokens.size() > max_tokens) {
+        LOGw(
+                "%s: truncating embedding input from %d to %d tokens",
+                __func__,
+                (int) tokens.size(),
+                max_tokens
+        );
+        tokens.resize(max_tokens);
+    }
+
+    if (tokens.empty()) {
+        LOGe("%s: tokenization produced no tokens", __func__);
+        return nullptr;
+    }
+
+    common_batch_clear(g_embedding_batch);
+
+    for (int32_t i = 0; i < (int32_t) tokens.size(); ++i) {
+        common_batch_add(
+                g_embedding_batch,
+                tokens[i],
+                i,
+                {0},
+                true
+        );
+    }
+
+    llama_memory_clear(
+            llama_get_memory(g_embedding_context),
+            true
+    );
+
+    // Encoder-only models such as BERT/E5 use llama_encode(), not llama_decode().
+    const int rc = llama_encode(
+            g_embedding_context,
+            g_embedding_batch
+    );
+
+    if (rc != 0) {
+        LOGe("%s: llama_encode() failed with %d", __func__, rc);
+        return nullptr;
+    }
+
+    float *embedding = llama_get_embeddings_seq(
+            g_embedding_context,
+            0
+    );
+
+    if (embedding == nullptr) {
+        LOGe("%s: llama_get_embeddings_seq() returned null", __func__);
+        return nullptr;
+    }
+
+    const int32_t dimension = g_embedding_dimension;
+    double norm = 0.0;
+    for (int32_t i = 0; i < dimension; ++i) {
+        const double value = embedding[i];
+        norm += value * value;
+    }
+
+    if (norm <= 0.0) {
+        LOGe("%s: embedding norm is zero", __func__);
+        return nullptr;
+    }
+
+    const float inv_norm = (float) (1.0 / std::sqrt(norm));
+
+    jfloatArray result = env->NewFloatArray(dimension);
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    std::vector<float> normalized(dimension);
+    for (int32_t i = 0; i < dimension; ++i) {
+        normalized[i] = embedding[i] * inv_norm;
+    }
+
+    env->SetFloatArrayRegion(
+            result,
+            0,
+            dimension,
+            normalized.data()
+    );
+
+    return result;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_nativeUnloadEmbeddingModel(
+        JNIEnv * /*env*/,
+        jobject /*unused*/) {
+
+    LOGi("%s: unloading embedding model", __func__);
+    free_embedding_resources();
+}
+
 
 /**
  * Get backend information
@@ -1059,7 +1365,6 @@ static void reset_short_term_states() {
 }
 
 
-
 /**
  * Decode tokens in batches
  */
@@ -1229,7 +1534,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt(
                     has_chat_template
             );
 
-    for (auto id : system_tokens) {
+    for (auto id: system_tokens) {
 
         LOGv(
                 "token: `%s`\t -> `%d`",
@@ -1411,7 +1716,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
                     has_chat_template
             );
 
-    for (auto id : user_tokens) {
+    for (auto id: user_tokens) {
 
         LOGv(
                 "token: `%s`\t -> `%d`",
@@ -1765,6 +2070,6 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_shutdown(
         JNIEnv *,
         jobject /*unused*/) {
 
+    free_embedding_resources();
     llama_backend_free();
 }
-

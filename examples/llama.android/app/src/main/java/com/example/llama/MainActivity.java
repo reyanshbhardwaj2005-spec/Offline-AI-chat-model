@@ -3,30 +3,26 @@ package com.example.llama;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.speech.RecognitionListener;
-import android.speech.RecognizerIntent;
-import android.speech.SpeechRecognizer;
-
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-
-import java.util.ArrayList;
-import java.util.Locale;
 
 import android.database.Cursor;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -34,24 +30,31 @@ import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import com.example.llama.memory.ConversationEntity;
+import com.example.llama.memory.MessageEntity;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
-
-import com.example.llama.memory.ConversationEntity;
-import com.example.llama.memory.MessageEntity;
+import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
-    // ============================================================
-    // UI
-    // ============================================================
+    private static final String TAG = "MainActivity";
+    private static final int RECORD_AUDIO_PERMISSION = 1001;
+
+    // UI Components
     private TextView statusText;
     private TextView modelNameText;
     private EditText userInput;
@@ -64,86 +67,66 @@ public class MainActivity extends AppCompatActivity {
     private DrawerLayout drawerLayout;
     private RecyclerView messagesRecyclerView;
     private View emptyState;
-    private View composerContainer;
 
     // Voice UI
     private View voiceListeningContainer;
     private TextView voiceListeningText;
 
-    // ============================================================
-    // Drawer
-    // ============================================================
+    // Drawer Components
     private LinearLayout historyContainer;
     private View drawerNewChat;
     private View drawerModels;
     private View drawerImages;
 
-    // ============================================================
-    // SPEECH TO TEXT
-    // ============================================================
+    // STT & TTS
     private SpeechRecognizer speechRecognizer;
     private Intent speechRecognizerIntent;
     private boolean isListening = false;
-    private static final int RECORD_AUDIO_PERMISSION = 1001;
-
-    // ============================================================
-    // Core
-    // ============================================================
-    private MessageAdapter messageAdapter;
-    private LlmManager llmManager;
-
-    // ============================================================
-    // TEXT TO SPEECH
-    // ============================================================
     private TextToSpeech textToSpeech;
     private boolean ttsReady = false;
 
-    // ============================================================
+    // Core Logic
+    private MessageAdapter messageAdapter;
+    private LlmManager llmManager;
+
     // State
-    // ============================================================
     private boolean modelReady = false;
     private boolean multimodalReady = false;
     private boolean isGenerating = false;
 
-    // ============================================================
-    // Model Picker
-    // ============================================================
-    private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
-        if (uri != null) {
-            importAndLoadModel(uri);
-        }
-    });
+    // Activity Result Launchers
+    private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(
+            new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri != null) importAndLoadModel(uri);
+            });
 
-    // ============================================================
-    // Vision Projector Picker
-    // ============================================================
-    private final ActivityResultLauncher<String[]> mmprojPicker = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
-        if (uri != null) {
-            importAndLoadMmproj(uri);
-        }
-    });
+    private final ActivityResultLauncher<String[]> mmprojPicker = registerForActivityResult(
+            new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri != null) importAndLoadMmproj(uri);
+            });
 
-    // ============================================================
-    // Image Picker
-    // ============================================================
-    private final ActivityResultLauncher<String> imagePicker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
-        if (uri != null) {
-            handleSelectedImage(uri);
-        }
-    });
-
-    // ============================================================
-    // ON CREATE
-    // ============================================================
+    private final ActivityResultLauncher<String> imagePicker = registerForActivityResult(
+            new ActivityResultContracts.GetContent(), uri -> {
+                if (uri != null) handleSelectedImage(uri);
+            });
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // --------------------------------------------------------
-        // Find Main Views
-        // --------------------------------------------------------
+        initViews();
+        setupRecyclerView();
+        setupManagers();
+        setupListeners();
+        setupKeyboardHandling();
+
+        // Initial UI State
+        updateModelStatus("No model loaded", "No model");
+        microphoneButton.setEnabled(true);
+    }
+
+    private void initViews() {
         drawerLayout = findViewById(R.id.drawerLayout);
         statusText = findViewById(R.id.modelStatusText);
         modelNameText = findViewById(R.id.modelNameText);
@@ -153,125 +136,80 @@ public class MainActivity extends AppCompatActivity {
         sendButton = findViewById(R.id.sendButton);
         messagesRecyclerView = findViewById(R.id.messages);
         emptyState = findViewById(R.id.emptyState);
-        composerContainer = findViewById(R.id.composerContainer);
         loadModelButton = findViewById(R.id.loadModelButton);
         menuButton = findViewById(R.id.menuButton);
         moreButton = findViewById(R.id.moreButton);
 
-        // --------------------------------------------------------
-        // Find Voice Views
-        // --------------------------------------------------------
         voiceListeningContainer = findViewById(R.id.voiceListeningContainer);
         voiceListeningText = findViewById(R.id.voiceListeningText);
 
-        // --------------------------------------------------------
-        // Find Drawer Views
-        // --------------------------------------------------------
         historyContainer = findViewById(R.id.historyContainer);
         drawerNewChat = findViewById(R.id.drawerNewChat);
         drawerModels = findViewById(R.id.drawerModels);
         drawerImages = findViewById(R.id.drawerImages);
+    }
 
-        // --------------------------------------------------------
-        // Keyboard
-        // --------------------------------------------------------
-        setupKeyboardHandling();
-
-        // --------------------------------------------------------
-        // RecyclerView
-        // --------------------------------------------------------
-        LinearLayoutManager layoutManager = new LinearLayoutManager(this);
-        messagesRecyclerView.setLayoutManager(layoutManager);
-        messagesRecyclerView.setItemAnimator(null);
-        messagesRecyclerView.setNestedScrollingEnabled(true);
-
-        // --------------------------------------------------------
-        // Adapter
-        // --------------------------------------------------------
+    private void setupRecyclerView() {
         messageAdapter = new MessageAdapter();
+        messagesRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        messagesRecyclerView.setItemAnimator(null);
         messagesRecyclerView.setAdapter(messageAdapter);
+    }
 
-        // --------------------------------------------------------
-        // Managers
-        // --------------------------------------------------------
+    private void setupManagers() {
         llmManager = new LlmManager(this);
         setupSpeechToText();
         setupTextToSpeech();
-
-        // --------------------------------------------------------
-        // Drawer
-        // --------------------------------------------------------
         setupDrawer();
+    }
 
-        // --------------------------------------------------------
-        // Initial UI State
-        // --------------------------------------------------------
-        modelReady = false;
-        multimodalReady = false;
-        isGenerating = false;
-        statusText.setText("No model loaded");
-        modelNameText.setText("No model");
-        userInput.setHint("Load a model to start chatting...");
-        sendButton.setEnabled(false);
-        microphoneButton.setEnabled(true); // Always enabled for user prompting
-
-        // --------------------------------------------------------
-        // Listeners
-        // --------------------------------------------------------
+    private void setupListeners() {
         loadModelButton.setOnClickListener(v -> openModelPicker());
-        menuButton.setOnClickListener(v -> {
-            if (drawerLayout != null) {
-                drawerLayout.openDrawer(androidx.core.view.GravityCompat.START);
-            }
-        });
-        moreButton.setOnClickListener(v -> {
-            if (!isGenerating) openModelPicker();
-        });
+        menuButton.setOnClickListener(v -> drawerLayout.openDrawer(Gravity.LEFT));
+        moreButton.setOnClickListener(v -> { if (!isGenerating) openModelPicker(); });
 
         sendButton.setOnClickListener(v -> {
-            if (!modelReady) {
-                openModelPicker();
-            } else if (isGenerating) {
-                stopGeneration();
-            } else {
-                sendMessage();
-            }
+            if (!modelReady) openModelPicker();
+            else if (isGenerating) stopGeneration();
+            else sendMessage();
         });
 
         addButton.setOnClickListener(v -> {
             if (!modelReady) {
                 statusText.setText("Load a model first");
                 openModelPicker();
-                return;
+            } else {
+                openImagePicker();
             }
-            if (!multimodalReady) {
-                statusText.setText("Vision is unavailable");
-                return;
-            }
-            openImagePicker();
         });
     }
-
-    // ============================================================
-    // KEYBOARD HANDLING
-    // ============================================================
 
     private void setupKeyboardHandling() {
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
     }
 
+    private void updateModelStatus(String status, String name) {
+        statusText.setText(status);
+        modelNameText.setText(name);
+        if (!modelReady) {
+            userInput.setHint("Load a model to start chatting...");
+            sendButton.setEnabled(false);
+        } else {
+            userInput.setHint("Type a message...");
+            sendButton.setEnabled(true);
+        }
+    }
+
     // ============================================================
-    // DRAWER
+    // DRAWER & HISTORY
     // ============================================================
 
     private void setupDrawer() {
         if (drawerNewChat != null) drawerNewChat.setOnClickListener(v -> { if (!isGenerating) createNewChat(); });
         if (drawerModels != null) drawerModels.setOnClickListener(v -> { if (!isGenerating) openModelPicker(); });
         if (drawerImages != null) drawerImages.setOnClickListener(v -> {
-            if (isGenerating) return;
-            if (!modelReady) { statusText.setText("Load a model first"); return; }
-            if (!multimodalReady) { statusText.setText("Vision is unavailable"); return; }
-            openImagePicker();
+            if (!isGenerating && modelReady) openImagePicker();
+            else if (!modelReady) statusText.setText("Load a model first");
         });
         refreshHistory();
     }
@@ -284,22 +222,27 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     historyContainer.removeAllViews();
                     if (conversations == null) return;
-                    for (ConversationEntity conversation : conversations) addHistoryItem(conversation);
+                    for (ConversationEntity conversation : conversations) {
+                        addHistoryItem(conversation);
+                    }
                 });
             }
-            @Override public void onError(Exception error) { android.util.Log.e("MainActivity", "History load failed", error); }
+            @Override public void onError(Exception error) { Log.e(TAG, "History failed", error); }
         });
     }
 
     private void addHistoryItem(ConversationEntity conversation) {
         TextView historyItem = new TextView(this);
         String title = conversation.getTitle();
-        historyItem.setText((title == null || title.isEmpty()) ? "New Chat" : title);
+        historyItem.setText(TextUtils.isEmpty(title) ? "New Chat" : title);
         historyItem.setTextSize(14);
         historyItem.setTextColor(Color.DKGRAY);
         historyItem.setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12));
         historyItem.setBackgroundResource(android.R.drawable.list_selector_background);
-        historyItem.setOnClickListener(v -> selectConversation(conversation.getId()));
+        historyItem.setOnClickListener(v -> {
+            selectConversation(conversation.getId());
+            drawerLayout.closeDrawers();
+        });
         historyContainer.addView(historyItem);
     }
 
@@ -318,13 +261,11 @@ public class MainActivity extends AppCompatActivity {
                                     int type = "user".equalsIgnoreCase(m.getRole()) ? Message.USER : Message.ASSISTANT;
                                     messageAdapter.addMessage(new Message(m.getContent(), type));
                                 }
-                                showChat();
+                                showChatUI();
                                 scrollToBottom();
                             } else {
-                                if (emptyState != null) emptyState.setVisibility(View.VISIBLE);
-                                if (messagesRecyclerView != null) messagesRecyclerView.setVisibility(View.GONE);
+                                hideChatUI();
                             }
-                            if (drawerLayout != null) drawerLayout.closeDrawer(androidx.core.view.GravityCompat.START);
                         });
                     }
                     @Override public void onError(Exception e) { statusText.setText("Load failed"); }
@@ -341,15 +282,18 @@ public class MainActivity extends AppCompatActivity {
             public void onSuccess(ConversationEntity c) {
                 runOnUiThread(() -> {
                     messageAdapter.clearMessages();
-                    if (messagesRecyclerView != null) messagesRecyclerView.setVisibility(View.GONE);
-                    if (emptyState != null) emptyState.setVisibility(View.VISIBLE);
-                    if (drawerLayout != null) drawerLayout.closeDrawer(androidx.core.view.GravityCompat.START);
+                    hideChatUI();
+                    drawerLayout.closeDrawers();
                     refreshHistory();
                 });
             }
-            @Override public void onError(Exception e) { statusText.setText("Chat creation failed"); }
+            @Override public void onError(Exception e) { statusText.setText("Creation failed"); }
         });
     }
+
+    // ============================================================
+    // MODEL LOADING
+    // ============================================================
 
     private void openModelPicker() {
         modelPicker.launch(new String[]{"application/octet-stream", "*/*"});
@@ -367,22 +311,20 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onSuccess() {
                         modelReady = true;
-                        modelNameText.setText(modelFile.getName());
                         loadModelButton.setVisibility(View.GONE);
-                        statusText.setText("Model ready");
-                        userInput.setHint("Type a message...");
-                        sendButton.setEnabled(true);
-                        microphoneButton.setEnabled(true);
-                        showChat();
+                        updateModelStatus("Model ready", modelFile.getName());
+                        showChatUI();
                         initializeVisionAutomatically();
                     }
                     @Override
                     public void onError(Exception e) {
                         modelReady = false;
-                        statusText.setText("Error: " + safeErrorMessage(e));
+                        updateModelStatus("Error: " + e.getMessage(), "No model");
                     }
                 }));
-            } catch (Exception e) { runOnUiThread(() -> statusText.setText("Import failed")); }
+            } catch (Exception e) {
+                runOnUiThread(() -> statusText.setText("Load failed: " + e.getMessage()));
+            }
         }).start();
     }
 
@@ -394,7 +336,7 @@ public class MainActivity extends AppCompatActivity {
             if (f.getName().toLowerCase().startsWith("mmproj")) {
                 llmManager.loadMultimodalModel(f.getAbsolutePath(), new LlmManager.LoadCallback() {
                     @Override public void onSuccess() { multimodalReady = true; statusText.setText("Ready • Vision Enabled"); }
-                    @Override public void onError(Exception e) {}
+                    @Override public void onError(Exception e) { Log.e(TAG, "Vision load failed", e); }
                 });
                 break;
             }
@@ -415,64 +357,20 @@ public class MainActivity extends AppCompatActivity {
                     @Override public void onSuccess() { multimodalReady = true; statusText.setText("Vision enabled"); }
                     @Override public void onError(Exception e) { statusText.setText("Vision failed"); }
                 }));
-            } catch (Exception e) {}
+            } catch (Exception e) { Log.e(TAG, "Mmproj copy failed", e); }
         }).start();
     }
 
-    private void openImagePicker() {
-        imagePicker.launch("image/*");
-    }
-
-    private void handleSelectedImage(Uri uri) {
-        if (!multimodalReady) { openMmprojPicker(); return; }
-        new Thread(() -> {
-            try {
-                File visionDir = new File(getCacheDir(), "vision");
-                if (!visionDir.exists()) visionDir.mkdirs();
-                File imageFile = new File(visionDir, "selected_image" + getImageExtension(uri));
-                copyUriToFile(uri, imageFile);
-                runOnUiThread(() -> sendVisionMessage(imageFile.getAbsolutePath()));
-            } catch (Exception e) {}
-        }).start();
-    }
-
-    private void sendVisionMessage(String imagePath) {
-        if (isGenerating) return;
-        String input = userInput.getText().toString().trim();
-        final String message = input.isEmpty() ? "Describe this image." : input;
-        userInput.setText("");
-        showChat();
-        isGenerating = true;
-        sendButton.setImageResource(R.drawable.ic_stop);
-        messageAdapter.addMessage(new Message(message, Message.USER));
-        messageAdapter.addMessage(new Message("", Message.ASSISTANT));
-        scrollToBottom();
-
-        llmManager.sendImageMessage(imagePath, message, new LlmManager.ChatCallback() {
-            @Override public void onToken(String text) {
-                if (LlmManager.THINKING_SIGNAL.equals(text)) messageAdapter.setThinking(true, messagesRecyclerView);
-                else { messageAdapter.setThinking(false, messagesRecyclerView); messageAdapter.updateLastMessage(text, messagesRecyclerView); }
-            }
-            @Override
-            public void onComplete(String full) {
-                runOnUiThread(() -> {
-                    isGenerating = false;
-                    messageAdapter.updateLastMessage(full, messagesRecyclerView);
-                    sendButton.setImageResource(R.drawable.ic_send);
-                    scrollToBottom();
-                    // Automatic speech removed per user request.
-                });
-            }
-            @Override public void onStopped() { runOnUiThread(() -> { isGenerating = false; sendButton.setImageResource(R.drawable.ic_send); }); }
-            @Override public void onError(Exception e) { runOnUiThread(() -> { isGenerating = false; sendButton.setImageResource(R.drawable.ic_send); }); }
-        });
-    }
+    // ============================================================
+    // CHAT ACTIONS
+    // ============================================================
 
     private void sendMessage() {
         String message = userInput.getText().toString().trim();
         if (message.isEmpty() || !modelReady) return;
+
         stopSpeaking();
-        showChat();
+        showChatUI();
         isGenerating = true;
         sendButton.setImageResource(R.drawable.ic_stop);
         messageAdapter.addMessage(new Message(message, Message.USER));
@@ -483,7 +381,10 @@ public class MainActivity extends AppCompatActivity {
         llmManager.sendMessage(message, new LlmManager.ChatCallback() {
             @Override public void onToken(String text) {
                 if (LlmManager.THINKING_SIGNAL.equals(text)) messageAdapter.setThinking(true, messagesRecyclerView);
-                else { messageAdapter.setThinking(false, messagesRecyclerView); messageAdapter.updateLastMessage(text, messagesRecyclerView); }
+                else {
+                    messageAdapter.setThinking(false, messagesRecyclerView);
+                    messageAdapter.updateLastMessage(text, messagesRecyclerView);
+                }
             }
             @Override
             public void onComplete(String full) {
@@ -492,24 +393,232 @@ public class MainActivity extends AppCompatActivity {
                     messageAdapter.updateLastMessage(full, messagesRecyclerView);
                     sendButton.setImageResource(R.drawable.ic_send);
                     scrollToBottom();
-                    // Automatic speech removed per user request.
+                    refreshHistory();
                 });
             }
-            @Override public void onStopped() { runOnUiThread(() -> { isGenerating = false; sendButton.setImageResource(R.drawable.ic_send); }); }
-            @Override public void onError(Exception e) { runOnUiThread(() -> { isGenerating = false; sendButton.setImageResource(R.drawable.ic_send); }); }
+            @Override public void onStopped() { finalizeGeneration("Stopped"); }
+            @Override public void onError(Exception e) { finalizeGeneration("Error: " + e.getMessage()); }
+        });
+    }
+
+    private void finalizeGeneration(String status) {
+        runOnUiThread(() -> {
+            isGenerating = false;
+            sendButton.setImageResource(R.drawable.ic_send);
+            statusText.setText(status);
+            messageAdapter.setThinking(false, messagesRecyclerView);
         });
     }
 
     private void stopGeneration() {
         llmManager.stopGeneration();
         stopSpeaking();
-        isGenerating = false;
-        sendButton.setImageResource(R.drawable.ic_send);
-        messageAdapter.setThinking(false, messagesRecyclerView);
+        finalizeGeneration("Generation stopped");
     }
+
+    // ============================================================
+    // MEDIA PICKER & IMAGE ANALYSIS
+    // ============================================================
+
+    private void openImagePicker() {
+        imagePicker.launch("image/*");
+    }
+
+    private void handleSelectedImage(Uri uri) {
+        if (!multimodalReady) {
+            statusText.setText("Vision model required");
+            new AlertDialog.Builder(this)
+                    .setTitle("Vision Projector Required")
+                    .setMessage("To analyze images, you need a vision projector model. Load one now?")
+                    .setPositiveButton("Select mmproj", (d, w) -> openMmprojPicker())
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+
+        // Prompt Dialog
+        runOnUiThread(() -> {
+            final EditText promptInput = new EditText(this);
+            promptInput.setHint("Ask about this image...");
+            promptInput.setGravity(Gravity.TOP | Gravity.START);
+            promptInput.setMinLines(3);
+            promptInput.setText(userInput.getText().toString());
+
+            FrameLayout container = new FrameLayout(this);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            int m = dpToPx(16);
+            lp.setMargins(m, dpToPx(8), m, m);
+            promptInput.setLayoutParams(lp);
+            container.addView(promptInput);
+
+            AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle("Image Selected")
+                    .setView(container)
+                    .setPositiveButton("Send", null)
+                    .setNegativeButton("Cancel", null)
+                    .create();
+
+            dialog.show();
+
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String prompt = promptInput.getText().toString().trim();
+                if (prompt.isEmpty()) prompt = "Describe this image.";
+                final String finalPrompt = prompt;
+                dialog.dismiss();
+
+                new Thread(() -> {
+                    try {
+                        File visionDir = new File(getCacheDir(), "vision");
+                        if (!visionDir.exists()) visionDir.mkdirs();
+                        File imageFile = new File(visionDir, "vision_" + System.currentTimeMillis() + getImageExtension(uri));
+                        copyUriToFile(uri, imageFile);
+                        runOnUiThread(() -> sendVisionMessage(imageFile.getAbsolutePath(), finalPrompt));
+                    } catch (Exception e) {
+                        runOnUiThread(() -> Toast.makeText(this, "Process failed", Toast.LENGTH_SHORT).show());
+                    }
+                }).start();
+            });
+        });
+    }
+
+    private void sendVisionMessage(String imagePath, String message) {
+        if (isGenerating) return;
+        showChatUI();
+        isGenerating = true;
+        sendButton.setImageResource(R.drawable.ic_stop);
+        messageAdapter.addMessage(new Message(message, Message.USER));
+        messageAdapter.addMessage(new Message("", Message.ASSISTANT));
+        scrollToBottom();
+
+        llmManager.sendImageMessage(imagePath, message, new LlmManager.ChatCallback() {
+            @Override public void onToken(String text) {
+                if (LlmManager.THINKING_SIGNAL.equals(text)) messageAdapter.setThinking(true, messagesRecyclerView);
+                else {
+                    messageAdapter.setThinking(false, messagesRecyclerView);
+                    messageAdapter.updateLastMessage(text, messagesRecyclerView);
+                }
+            }
+            @Override public void onComplete(String full) {
+                runOnUiThread(() -> {
+                    isGenerating = false;
+                    messageAdapter.updateLastMessage(full, messagesRecyclerView);
+                    sendButton.setImageResource(R.drawable.ic_send);
+                    scrollToBottom();
+                    refreshHistory();
+                });
+            }
+            @Override public void onStopped() { finalizeGeneration("Stopped"); }
+            @Override public void onError(Exception e) { finalizeGeneration("Vision failed"); }
+        });
+    }
+
+    // ============================================================
+    // STT & TTS IMPLEMENTATION
+    // ============================================================
+
+    private void setupSpeechToText() {
+        microphoneButton.setOnClickListener(v -> {
+            if (!modelReady) { statusText.setText("Load model first"); openModelPicker(); return; }
+            if (isListening) stopSpeechToText();
+            else startSpeechToText();
+        });
+
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) return;
+
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        speechRecognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+
+        speechRecognizer.setRecognitionListener(new RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle p) { setMicUI(true, "Listening..."); }
+            @Override public void onBeginningOfSpeech() { voiceListeningText.setText("Speak now"); }
+            @Override public void onRmsChanged(float rms) {}
+            @Override public void onBufferReceived(byte[] b) {}
+            @Override public void onEndOfSpeech() { voiceListeningText.setText("Processing..."); }
+            @Override public void onError(int e) { setMicUI(false, "Mic error"); }
+            @Override public void onResults(Bundle r) {
+                ArrayList<String> matches = r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (matches != null && !matches.isEmpty()) {
+                    userInput.setText(matches.get(0));
+                    sendMessage();
+                }
+                setMicUI(false, "Model ready");
+            }
+            @Override public void onPartialResults(Bundle p) {
+                ArrayList<String> matches = p.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (matches != null && !matches.isEmpty()) userInput.setText(matches.get(0));
+            }
+            @Override public void onEvent(int t, Bundle p) {}
+        });
+    }
+
+    private void setMicUI(boolean listening, String status) {
+        runOnUiThread(() -> {
+            isListening = listening;
+            voiceListeningContainer.setVisibility(listening ? View.VISIBLE : View.GONE);
+            statusText.setText(status);
+        });
+    }
+
+    private void startSpeechToText() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_AUDIO_PERMISSION);
+            return;
+        }
+        try {
+            speechRecognizer.startListening(speechRecognizerIntent);
+        } catch (Exception e) { setMicUI(false, "Mic failed"); }
+    }
+
+    private void stopSpeechToText() {
+        if (speechRecognizer != null) speechRecognizer.stopListening();
+        setMicUI(false, "Model ready");
+    }
+
+    private void setupTextToSpeech() {
+        textToSpeech = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                textToSpeech.setLanguage(Locale.getDefault());
+                ttsReady = true;
+            }
+        });
+
+        textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override public void onStart(String id) {}
+            @Override public void onDone(String id) { runOnUiThread(() -> messageAdapter.clearSpeakingPosition()); }
+            @Override public void onError(String id) { runOnUiThread(() -> messageAdapter.clearSpeakingPosition()); }
+        });
+
+        messageAdapter.setOnSpeakClickListener((text, position) -> {
+            if (!ttsReady) return;
+            if (messageAdapter.getSpeakingPosition() == position) stopSpeaking();
+            else speakText(text, position);
+        });
+    }
+
+    private void speakText(String text, int position) {
+        if (textToSpeech == null || !ttsReady) return;
+        textToSpeech.stop();
+        messageAdapter.setSpeakingPosition(position);
+        Bundle params = new Bundle();
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "msg_" + position);
+        textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, params, "msg_" + position);
+    }
+
+    private void stopSpeaking() {
+        if (textToSpeech != null) textToSpeech.stop();
+        messageAdapter.clearSpeakingPosition();
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
 
     private void copyUriToFile(Uri uri, File dest) throws IOException {
         try (InputStream in = getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(dest)) {
+            if (in == null) return;
             byte[] buf = new byte[8192];
             int r;
             while ((r = in.read(buf)) != -1) out.write(buf, 0, r);
@@ -536,7 +645,6 @@ public class MainActivity extends AppCompatActivity {
         return ".jpg";
     }
 
-    private String safeErrorMessage(Exception e) { return e != null ? e.getMessage() : "Unknown error"; }
     private int dpToPx(int dp) { return (int) (dp * getResources().getDisplayMetrics().density + 0.5f); }
 
     private void scrollToBottom() {
@@ -546,193 +654,28 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void showChat() {
+    private void showChatUI() {
         if (emptyState != null) emptyState.setVisibility(View.GONE);
         if (messagesRecyclerView != null) messagesRecyclerView.setVisibility(View.VISIBLE);
+    }
+
+    private void hideChatUI() {
+        if (emptyState != null) emptyState.setVisibility(View.VISIBLE);
+        if (messagesRecyclerView != null) messagesRecyclerView.setVisibility(View.GONE);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == RECORD_AUDIO_PERMISSION && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+            startSpeechToText();
     }
 
     @Override
     protected void onDestroy() {
         if (textToSpeech != null) { textToSpeech.stop(); textToSpeech.shutdown(); }
-        if (speechRecognizer != null) { speechRecognizer.stopListening(); speechRecognizer.destroy(); }
+        if (speechRecognizer != null) speechRecognizer.destroy();
         if (llmManager != null) llmManager.destroy();
         super.onDestroy();
-    }
-
-    // ============================================================
-    // TTS SETUP
-    // ============================================================
-
-    private void setupTextToSpeech() {
-        textToSpeech = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                textToSpeech.setLanguage(Locale.getDefault());
-                ttsReady = true;
-            }
-        });
-
-        textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override public void onStart(String utteranceId) {}
-            @Override public void onDone(String utteranceId) { runOnUiThread(() -> messageAdapter.clearSpeakingPosition()); }
-            @Override public void onError(String utteranceId) { runOnUiThread(() -> messageAdapter.clearSpeakingPosition()); }
-        });
-
-        messageAdapter.setOnSpeakClickListener((text, position) -> {
-            if (!ttsReady) return;
-            if (messageAdapter.getSpeakingPosition() == position) stopSpeaking();
-            else speakText(text, position);
-        });
-    }
-
-    private void speakText(String text, int position) {
-        if (textToSpeech == null || !ttsReady) return;
-        textToSpeech.stop();
-        messageAdapter.setSpeakingPosition(position);
-        Bundle params = new Bundle();
-        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "msg_" + position);
-        textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, params, "msg_" + position);
-    }
-
-    private void stopSpeaking() {
-        if (textToSpeech != null) textToSpeech.stop();
-        messageAdapter.clearSpeakingPosition();
-    }
-
-    // ============================================================
-    // STT SETUP
-    // ============================================================
-
-    private void setupSpeechToText() {
-        microphoneButton.setOnClickListener(v -> {
-            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-                statusText.setText("Speech not supported");
-                Toast.makeText(this, "Speech recognition not supported", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (!modelReady) {
-                statusText.setText("Load a model first");
-                openModelPicker();
-                return;
-            }
-            if (isListening) stopSpeechToText();
-            else startSpeechToText();
-        });
-    }
-
-    private void initSpeechRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return;
-
-        if (speechRecognizer != null) {
-            speechRecognizer.destroy();
-        }
-
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-        speechRecognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, this.getPackageName());
-
-        speechRecognizer.setRecognitionListener(new RecognitionListener() {
-            @Override
-            public void onReadyForSpeech(Bundle params) {
-                runOnUiThread(() -> {
-                    isListening = true;
-                    if (voiceListeningContainer != null) voiceListeningContainer.setVisibility(View.VISIBLE);
-                    if (voiceListeningText != null) voiceListeningText.setText("Listening...");
-                });
-            }
-
-            @Override
-            public void onBeginningOfSpeech() {
-                runOnUiThread(() -> { if (voiceListeningText != null) voiceListeningText.setText("Speak now"); });
-            }
-
-            @Override public void onRmsChanged(float rmsdB) {}
-            @Override public void onBufferReceived(byte[] buffer) {}
-
-            @Override
-            public void onEndOfSpeech() {
-                runOnUiThread(() -> { if (voiceListeningText != null) voiceListeningText.setText("Processing..."); });
-            }
-
-            @Override
-            public void onError(int error) {
-                runOnUiThread(() -> {
-                    isListening = false;
-                    if (voiceListeningContainer != null) voiceListeningContainer.setVisibility(View.GONE);
-                    statusText.setText("Voice input error: " + error);
-                    android.util.Log.e("MainActivity", "STT Error: " + error);
-                });
-            }
-
-            @Override
-            public void onResults(Bundle results) {
-                ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                runOnUiThread(() -> {
-                    isListening = false;
-                    if (voiceListeningContainer != null) voiceListeningContainer.setVisibility(View.GONE);
-                    if (matches != null && !matches.isEmpty()) {
-                        String recognizedText = matches.get(0);
-                        userInput.setText(recognizedText);
-                        userInput.setSelection(userInput.length());
-
-                        // Automatically send the recognized text
-                        if (modelReady && !isGenerating && !recognizedText.trim().isEmpty()) {
-                            sendMessage();
-                        }
-                    }
-                });
-            }
-
-            @Override
-            public void onPartialResults(Bundle partialResults) {
-                ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if (matches != null && !matches.isEmpty()) {
-                    runOnUiThread(() -> {
-                        userInput.setText(matches.get(0));
-                        userInput.setSelection(userInput.length());
-                    });
-                }
-            }
-
-            @Override public void onEvent(int eventType, Bundle params) {}
-        });
-    }
-
-    private void startSpeechToText() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_AUDIO_PERMISSION);
-            return;
-        }
-
-        try {
-            // Re-initialize to ensure a fresh state
-            initSpeechRecognizer();
-
-            if (speechRecognizer != null) {
-                speechRecognizer.startListening(speechRecognizerIntent);
-                // Immediate feedback
-                isListening = true;
-                if (voiceListeningContainer != null) voiceListeningContainer.setVisibility(View.VISIBLE);
-                if (voiceListeningText != null) voiceListeningText.setText("Starting mic...");
-            }
-        } catch (Exception e) {
-            statusText.setText("Mic failed");
-            isListening = false;
-        }
-    }
-
-    private void stopSpeechToText() {
-        if (speechRecognizer != null) speechRecognizer.stopListening();
-        isListening = false;
-        if (voiceListeningContainer != null) voiceListeningContainer.setVisibility(View.GONE);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == RECORD_AUDIO_PERMISSION && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)
-            startSpeechToText();
     }
 }
