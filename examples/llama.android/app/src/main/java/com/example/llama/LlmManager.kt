@@ -5,6 +5,7 @@ import com.example.llama.ai.chat.LlamaChatEngine
 import com.example.llama.memory.ContextBuilder
 import com.example.llama.memory.ConversationEntity
 import com.example.llama.memory.MemoryManager
+import com.example.llama.memory.LlmMemoryAnalyzer
 import com.example.llama.memory.MessageEntity
 import com.example.llama.embedding.LocalEmbeddingEngine
 import kotlinx.coroutines.CoroutineScope
@@ -12,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,6 +39,7 @@ class LlmManager(context: Context) {
     private val contextBuilder = ContextBuilder(
         memoryManager = memoryManager
     )
+    private val memoryAnalyzer = LlmMemoryAnalyzer()
 
     /*
      * Main manager scope.
@@ -201,7 +204,6 @@ class LlmManager(context: Context) {
                     if (conversationId != currentConversationId || generationStopped) {
                         return@withLock
                     }
-
                     /*
                      * Fast RAG path:
                      *
@@ -227,7 +229,6 @@ class LlmManager(context: Context) {
                         currentMessage = message,
                         recentMessageLimit = 0
                     )
-
                     val enrichedMessage =
                         if (ragPrompt.isBlank()) {
                             message
@@ -284,6 +285,11 @@ class LlmManager(context: Context) {
                 withMain {
                     callback.onComplete(finalResponse)
                 }
+
+                analyzeAndStoreMemoryAsync(
+                    userMessage = message,
+                    assistantResponse = finalResponse
+                )
 
                 updateSummaryIfNecessary(conversationId)
             } catch (e: Exception) {
@@ -351,7 +357,6 @@ class LlmManager(context: Context) {
                     if (conversationId != currentConversationId || generationStopped) {
                         return@withLock
                     }
-
                     /*
                      * Apply the same semantic-memory/RAG flow to vision
                      * turns. The user's text query is still the retrieval
@@ -367,7 +372,6 @@ class LlmManager(context: Context) {
                         currentMessage = message,
                         recentMessageLimit = 0
                     )
-
                     val enrichedMessage =
                         if (ragPrompt.isBlank()) {
                             message
@@ -430,6 +434,11 @@ class LlmManager(context: Context) {
                 withMain {
                     callback.onComplete(finalResponse)
                 }
+
+                analyzeAndStoreMemoryAsync(
+                    userMessage = message,
+                    assistantResponse = finalResponse
+                )
 
                 updateSummaryIfNecessary(
                     conversationId
@@ -909,8 +918,97 @@ class LlmManager(context: Context) {
             }
         }
     }
-
     // ========================================================================
+    // ========================================================================
+    // INTELLIGENT MEMORY ANALYSIS
+    // ========================================================================
+    /**
+     * Runs memory extraction after the normal response has reached the UI.
+     * The same native llama.cpp engine is protected by engineMutex, so the
+     * analyzer can never run concurrently with normal generation.
+     */
+    private fun analyzeAndStoreMemoryAsync(
+        userMessage: String,
+        assistantResponse: String
+    ) {
+        if (userMessage.isBlank() || assistantResponse.isBlank()) return
+
+        scope.launch {
+            try {
+                engineMutex.withLock {
+                    if (!modelLoaded || currentConversationId == -1L) {
+                        return@withLock
+                    }
+                    // ------------------------------------------------------------
+                    // 1. Switch native engine to a clean context for memory
+                    // analysis.
+                    // ------------------------------------------------------------
+                    engine.resetConversation()
+                    val decision = memoryAnalyzer.analyze(
+                        userMessage = userMessage,
+                        assistantResponse = assistantResponse
+                    ) { prompt, maxTokens ->
+                        engine.setSystemPrompt(
+                            """
+                        You are a strict INTERNAL memory-extraction model.
+
+                        You are NOT the user-facing assistant.
+
+                        Analyze ONLY the current user message and assistant response
+                        provided in the prompt.
+
+                        Do not answer the user's question.
+                        Do not continue the conversation.
+                        Do not use unrelated previous conversation context.
+
+                        Return ONLY the JSON requested by the prompt.
+                        """.trimIndent()
+                        )
+                        val builder = StringBuilder()
+
+                        engine.sendMessage(
+                            prompt,
+                            predictLength = maxTokens
+                        ).collect { token ->
+                            builder.append(token)
+                        }
+
+                        builder.toString()
+                    }
+                    // ------------------------------------------------------------
+                    // 2. Save the memory decision.
+                    // ------------------------------------------------------------
+                    memoryManager.applyMemoryDecision(decision)
+                    // ------------------------------------------------------------
+                    // 3. VERY IMPORTANT:
+                    //
+                    // The native engine currently contains the memory-analysis
+                    // conversation. Clear it before restoring the real chat.
+                    // ------------------------------------------------------------
+                    if (modelLoaded && currentConversationId != -1L) {
+                        engine.resetConversation()
+
+                        rebuildConversationContext()
+                    }
+                }
+            } catch (_: Exception) {
+                // Memory extraction must NEVER break normal chat.
+                //
+                // If anything failed during internal analysis, restore the
+                // user's real conversation context anyway.
+                if (modelLoaded && currentConversationId != -1L) {
+                    runCatching {
+                        engineMutex.withLock {
+                            engine.resetConversation()
+
+                            rebuildConversationContext()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // CLEANUP
     // ========================================================================
     fun cleanUp() {

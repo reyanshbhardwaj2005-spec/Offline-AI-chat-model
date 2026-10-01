@@ -110,6 +110,33 @@ class MemoryManager(
     // PERSISTENT MEMORY
     // =============================================================
 
+    /**
+     * Applies an LLM-produced memory decision. The LLM never touches Room or
+     * the vector store directly; MemoryManager remains the single owner of
+     * persistence and indexing.
+     */
+    suspend fun applyMemoryDecision(decision: MemoryDecision) {
+        if (!decision.shouldRemember) return
+
+        val key = decision.key?.trim().orEmpty()
+        val value = decision.memory?.trim().orEmpty()
+        if (key.isBlank() || value.isBlank()) return
+
+        when (decision.action) {
+            MemoryDecision.Action.IGNORE -> Unit
+
+            MemoryDecision.Action.CREATE,
+            MemoryDecision.Action.UPDATE,
+            MemoryDecision.Action.MERGE -> {
+                saveMemory(
+                    key = key,
+                    value = value,
+                    importance = decision.importance.coerceIn(1, 5)
+                )
+            }
+        }
+    }
+
     suspend fun saveMemory(
         key: String,
         value: String,
